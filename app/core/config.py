@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     INITIAL_SUPER_ADMIN_EMAIL: str | None = None
     INITIAL_SUPER_ADMIN_PASSWORD: str | None = None
 
+    UPLOAD_DIR: str = "uploads"
+    UPLOAD_URL_PREFIX: str = "/uploads"
+    MAX_UPLOAD_SIZE_MB: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:

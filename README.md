@@ -9,8 +9,8 @@ Uzbekistan sanatoriums with a built-in markup engine for travel agents.
 
 | Iteration | Scope | State |
 |---|---|---|
-| **v0.1** | Auth + User + RBAC | current |
-| v0.2 | Sanatorium CRUD + media | planned |
+| v0.1 | Auth + User + RBAC | shipped |
+| **v0.2** | Sanatorium CRUD + media | current |
 | v0.3 | Rooms + availability + markup engine | planned |
 | v0.4 | Booking flow (no payment) | planned |
 
@@ -71,7 +71,9 @@ curl -X POST http://127.0.0.1:8001/api/v1/auth/login \
 
 **Roles:** `super_admin` (platform), `admin` (sanatorium), `agent` (B2B), `customer` (B2C)
 
-## Endpoints (v0.1)
+## Endpoints
+
+### Health + auth (v0.1)
 
 | Method | Path | Auth |
 |---|---|---|
@@ -80,10 +82,28 @@ curl -X POST http://127.0.0.1:8001/api/v1/auth/login \
 | `POST` | `/api/v1/auth/register` | — (creates customer) |
 | `POST` | `/api/v1/auth/login` | — |
 | `POST` | `/api/v1/auth/refresh` | — (refresh token in body) |
+
+### Users (v0.1)
+
+| Method | Path | Auth |
+|---|---|---|
 | `GET` | `/api/v1/users/me` | any role |
 | `GET` | `/api/v1/users` | super_admin |
 | `GET` | `/api/v1/users/{id}` | super_admin |
 | `PATCH` | `/api/v1/users/{id}` | super_admin |
+
+### Sanatoriums (v0.2)
+
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| `GET` | `/api/v1/sanatoriums` | optional | filters: `city`, `status`, `stars`, `q` (name search); `sort=name\|stars\|created_at` (prefix `-` for desc); `limit`, `offset` |
+| `GET` | `/api/v1/sanatoriums/{id}` | optional | public sees only approved; admin sees own; super_admin sees all |
+| `POST` | `/api/v1/sanatoriums` | super_admin | creates with `status=pending` |
+| `PATCH` | `/api/v1/sanatoriums/{id}` | super_admin or owning admin | name change auto-regenerates slug |
+| `POST` | `/api/v1/sanatoriums/{id}/approve` | super_admin | flips status to `approved` |
+| `POST` | `/api/v1/sanatoriums/{id}/images` | super_admin or owning admin | multipart; JPEG/PNG/WebP up to 10 MB; `caption`, `is_primary`, `order` form fields |
+
+Image files are served from `/uploads/...` (FastAPI `StaticFiles` in dev; nginx in prod).
 
 ## Tests
 

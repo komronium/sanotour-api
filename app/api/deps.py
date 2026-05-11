@@ -10,13 +10,11 @@ from app.models.user import User, UserRole
 from app.services.user_service import UserService, get_user_service
 
 bearer_scheme = HTTPBearer(auto_error=True)
+optional_bearer_scheme = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
-    users: Annotated[UserService, Depends(get_user_service)],
-) -> User:
-    credentials_error = HTTPException(
+def _resolve_user_id(credentials: HTTPAuthorizationCredentials) -> uuid.UUID:
+    error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
@@ -24,23 +22,51 @@ async def get_current_user(
     try:
         claims = decode_token(credentials.credentials)
     except ValueError as exc:
-        raise credentials_error from exc
-
+        raise error from exc
     if claims.get("type") != "access":
-        raise credentials_error
-
+        raise error
     try:
-        user_id = uuid.UUID(claims["sub"])
+        return uuid.UUID(claims["sub"])
     except (KeyError, ValueError) as exc:
-        raise credentials_error from exc
+        raise error from exc
 
+
+async def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    users: Annotated[UserService, Depends(get_user_service)],
+) -> User:
+    user_id = _resolve_user_id(credentials)
     user = await users.get_by_id(user_id)
     if user is None or not user.is_active:
-        raise credentials_error
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+async def get_optional_user(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(optional_bearer_scheme)
+    ],
+    users: Annotated[UserService, Depends(get_user_service)],
+) -> User | None:
+    if credentials is None:
+        return None
+    user_id = _resolve_user_id(credentials)
+    user = await users.get_by_id(user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Could not validate credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+OptionalUser = Annotated[User | None, Depends(get_optional_user)]
 
 
 def require_roles(

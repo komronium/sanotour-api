@@ -13,6 +13,8 @@ from app.core.database import Base, get_db
 from app.core.security import hash_password
 from app.main import app
 from app.models.user import User, UserRole
+from app.services.storage import get_storage
+from tests.factories import InMemoryStorage
 
 assert settings.TEST_DATABASE_URL is not None, (
     "TEST_DATABASE_URL must be set to run tests"
@@ -31,10 +33,16 @@ async def engine():
 
 
 @pytest.fixture
-async def db(engine) -> AsyncGenerator[AsyncSession, None]:
-    """Function-scoped session. Truncates user-data tables after each test."""
-    sessionmaker = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-    async with sessionmaker() as session:
+async def session_factory(engine):
+    return async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+
+
+@pytest.fixture
+async def db(
+    session_factory, engine
+) -> AsyncGenerator[AsyncSession, None]:
+    """Test-side session for fixtures and assertions."""
+    async with session_factory() as session:
         yield session
 
     # Cleanup: truncate all tables to keep tests isolated
@@ -44,11 +52,22 @@ async def db(engine) -> AsyncGenerator[AsyncSession, None]:
 
 
 @pytest.fixture
-async def client(db: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+def storage() -> InMemoryStorage:
+    return InMemoryStorage()
+
+
+@pytest.fixture
+async def client(
+    db: AsyncSession,
+    session_factory,
+    storage: InMemoryStorage,
+) -> AsyncGenerator[AsyncClient, None]:
     async def _override_get_db() -> AsyncGenerator[AsyncSession, None]:
-        yield db
+        async with session_factory() as request_session:
+            yield request_session
 
     app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_storage] = lambda: storage
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
