@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.sanatorium import Translations  # re-exported for room name translations
+from app.schemas.common import Translations
 
 
 class RoomCategoryCreate(BaseModel):
@@ -38,9 +38,9 @@ class RoomCategoryRead(BaseModel):
     markup_percent: Decimal
     min_nights: int
     is_active: bool
-    final_price: Decimal
-    final_price_uzs: Decimal | None
-    final_price_usd: Decimal | None
+    final_price: Decimal = Decimal("0")
+    final_price_uzs: Decimal | None = None
+    final_price_usd: Decimal | None = None
     created_at: datetime
     updated_at: datetime
 

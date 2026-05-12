@@ -293,10 +293,6 @@ async def main() -> None:
         await db.flush()
 
         # 6. Sample bookings (only if none exist yet)
-        booking_count = (
-            await db.execute(select(RoomCategory).limit(1))
-        ).scalar_one_or_none()
-
         existing_bookings = (
             await db.execute(select(Booking).limit(1))
         ).scalar_one_or_none()
@@ -326,7 +322,7 @@ async def main() -> None:
                 if len(avail_rows) < nights:
                     continue  # not enough availability, skip
 
-                from app.services.pricing import calculate_final_price
+                from app.core.pricing import calculate_final_price
                 final_price = calculate_final_price(room.base_price, room.markup_percent)
 
                 booking = Booking(

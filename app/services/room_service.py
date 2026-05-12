@@ -1,19 +1,20 @@
 import uuid
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.utils import date_range
 from app.models.availability import RoomAvailability
 from app.models.room import ExchangeRate, RoomCategory
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 from app.schemas.exchange_rate import ExchangeRateUpsert
 from app.schemas.room import AvailabilityBulkCreate, RoomCategoryCreate, RoomCategoryUpdate
-from app.services.pricing import enrich_room
+from app.core.pricing import enrich_room
 
 _USD_UZS = "USD_UZS"
 
@@ -140,7 +141,7 @@ class RoomService:
                 detail="Not allowed to manage this room's availability",
             )
 
-        all_dates = _date_range(payload.date_from, payload.date_to)
+        all_dates = date_range(payload.date_from, payload.date_to)
 
         existing_stmt = select(RoomAvailability).where(
             RoomAvailability.room_category_id == room.id,
@@ -229,10 +230,54 @@ class RoomService:
         rate = await self.get_usd_uzs_rate()
         return enrich_room(room, rate)
 
+    # ── search ─────────────────────────────────────────────────────────────
 
-def _date_range(start: date, end: date) -> list[date]:
-    """Inclusive start, exclusive end."""
-    return [start + timedelta(days=i) for i in range((end - start).days)]
+    async def search(
+        self,
+        *,
+        check_in: date,
+        check_out: date,
+        guests: int,
+        sanatorium_id: uuid.UUID | None = None,
+    ) -> list[tuple[RoomCategory, dict]]:
+        nights = (check_out - check_in).days
+        if nights <= 0:
+            return []
+
+        all_dates = date_range(check_in, check_out)
+
+        avail_subq = (
+            select(
+                RoomAvailability.room_category_id,
+                func.count().label("covered_dates"),
+            )
+            .where(
+                RoomAvailability.date.in_(all_dates),
+                RoomAvailability.units_available >= 1,
+            )
+            .group_by(RoomAvailability.room_category_id)
+            .subquery()
+        )
+
+        stmt = (
+            select(RoomCategory)
+            .join(Sanatorium, RoomCategory.sanatorium_id == Sanatorium.id)
+            .join(avail_subq, RoomCategory.id == avail_subq.c.room_category_id)
+            .where(
+                Sanatorium.status == SanatoriumStatus.APPROVED,
+                RoomCategory.is_active.is_(True),
+                RoomCategory.capacity >= guests,
+                RoomCategory.min_nights <= nights,
+                avail_subq.c.covered_dates == nights,
+            )
+        )
+
+        if sanatorium_id is not None:
+            stmt = stmt.where(RoomCategory.sanatorium_id == sanatorium_id)
+
+        rows = (await self.db.execute(stmt.order_by(RoomCategory.base_price.asc()))).scalars().all()
+        rate = await self.get_usd_uzs_rate()
+        return [(room, enrich_room(room, rate)) for room in rows]
 
 
 def get_room_service(db: AsyncSession = Depends(get_db)) -> RoomService:

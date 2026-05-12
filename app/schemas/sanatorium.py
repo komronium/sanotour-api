@@ -5,12 +5,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.sanatorium import SanatoriumStatus
-
-
-class Translations(BaseModel):
-    uz: str | None = None
-    ru: str | None = None
-    en: str | None = None
+from app.schemas.common import Translations
 
 
 class SanatoriumImageRead(BaseModel):

@@ -4,6 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import CurrentUser, OptionalUser, require_roles
+from app.models.room import RoomCategory
 from app.models.user import User, UserRole
 from app.schemas.room import (
     AvailabilityBulkCreate,
@@ -13,8 +14,7 @@ from app.schemas.room import (
     RoomCategoryRead,
     RoomCategoryUpdate,
 )
-from app.services.pricing import enrich_room
-from app.services.room_search import RoomSearchService, get_room_search_service
+from app.core.pricing import enrich_room
 from app.services.room_service import RoomService, get_room_service
 
 router = APIRouter(prefix="/rooms", tags=["rooms"])
@@ -22,8 +22,8 @@ router = APIRouter(prefix="/rooms", tags=["rooms"])
 require_admin_or_above = require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
 
-def _room_read(room, pricing: dict) -> RoomCategoryRead:
-    return RoomCategoryRead.model_validate({**room.__dict__, **pricing})
+def _room_read(room: RoomCategory, pricing: dict) -> RoomCategoryRead:
+    return RoomCategoryRead.model_validate(room).model_copy(update=pricing)
 
 
 @router.get("", response_model=RoomCategoryList)
@@ -56,14 +56,14 @@ async def search_rooms(
     check_out: date = Query(...),
     guests: int = Query(default=1, ge=1),
     sanatorium_id: uuid.UUID | None = Query(default=None),
-    search: RoomSearchService = Depends(get_room_search_service),
+    rooms: RoomService = Depends(get_room_service),
 ) -> list[RoomCategoryRead]:
     if check_out <= check_in:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="check_out must be after check_in",
         )
-    results = await search.search(
+    results = await rooms.search(
         check_in=check_in,
         check_out=check_out,
         guests=guests,

@@ -5,6 +5,7 @@ from sqlalchemy import Date, ForeignKey, Integer, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
+from app.models.room import RoomCategory
 
 
 class RoomAvailability(Base):

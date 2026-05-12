@@ -1,20 +1,21 @@
 import uuid
 from collections.abc import Sequence
-from datetime import date, timedelta
+from datetime import date
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.pricing import calculate_final_price
+from app.core.utils import date_range
 from app.models.availability import RoomAvailability
 from app.models.booking import Booking, BookingStatus
+from app.models.notification import Notification
 from app.models.room import RoomCategory
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate
-from app.services.notification_stub import notify_booking_cancelled, notify_booking_created
-from app.services.pricing import calculate_final_price
 
 _CANCELLABLE = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
 
@@ -39,7 +40,7 @@ class BookingService:
             )
 
         nights = (payload.check_out - payload.check_in).days
-        all_dates = [payload.check_in + timedelta(days=i) for i in range(nights)]
+        all_dates = date_range(payload.check_in, payload.check_out)
 
         # Lock the room row first to prevent races on markup/price reads
         room = (
@@ -123,7 +124,7 @@ class BookingService:
         self.db.add(booking)
         await self.db.flush()  # assigns booking.id before notification insert
 
-        await notify_booking_created(self.db, booking.id)
+        self.db.add(Notification(booking_id=booking.id, type="booking_created", channel="email"))
         await self.db.commit()
         await self.db.refresh(booking)
         return booking
@@ -194,7 +195,7 @@ class BookingService:
             row.units_available = min(row.units_available + 1, row.units_total)
 
         booking.status = BookingStatus.CANCELLED
-        await notify_booking_cancelled(self.db, booking.id)
+        self.db.add(Notification(booking_id=booking.id, type="booking_cancelled", channel="email"))
         await self.db.commit()
         await self.db.refresh(booking)
         return booking

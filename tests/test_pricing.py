@@ -3,7 +3,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.pricing import calculate_final_price, convert_to_uzs, convert_to_usd
+from app.core.pricing import calculate_final_price, convert_to_uzs, convert_to_usd
 
 
 def _rate(value: str):
