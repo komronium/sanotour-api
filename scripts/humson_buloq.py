@@ -1,6 +1,7 @@
 """Seed Humson Buloq sanatorium with real price-list data (Sep–Dec 2025).
 
-Idempotent: safe to run multiple times.
+Purges any existing Humson Buloq rows first, then re-creates everything from
+scratch. The admin user is reused if it already exists.
 
 Usage:
     uv run python -m scripts.humson_buloq
@@ -11,7 +12,6 @@ from datetime import date, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
 from app.core.security import hash_password
@@ -19,7 +19,11 @@ from app.models.amenity import Amenity, TreatmentProgram
 from app.models.availability import RoomAvailability
 from app.models.extra_bed import ExtraBedConfig
 from app.models.room import RoomCategory, RoomPricePeriod
-from app.models.sanatorium import Sanatorium, SanatoriumStatus
+from app.models.sanatorium import (
+    PropertyType,
+    Sanatorium,
+    SanatoriumStatus,
+)
 from app.models.user import User, UserRole
 
 # ── admin ──────────────────────────────────────────────────────────────────
@@ -35,6 +39,7 @@ ADMIN = {
 SANATORIUM = {
     "name": "Humson Buloq",
     "slug": "humson-buloq",
+    "property_type": PropertyType.SANATORIUM,
     "description": {
         "uz": "Toshkent viloyatidagi Humson Buloq sanatoriy-kurort majmuasi. "
               "Shifobaxsh buloq suvi va zamonaviy tibbiy muolajalar.",
@@ -43,7 +48,8 @@ SANATORIUM = {
         "en": "Humson Buloq resort and spa complex in Tashkent region. "
               "Healing mineral water and modern medical treatments.",
     },
-    "city": "Toshkent viloyati",
+    "city": "Bostanliq",
+    "region": "Toshkent viloyati",
     "address": "Bostanliq tumani, Humson qishlog'i",
     "lat": Decimal("41.6833"),
     "lng": Decimal("70.0167"),
@@ -63,6 +69,17 @@ SANATORIUM = {
         "en": "Consumption of alcoholic beverages is strictly prohibited. "
               "All medical procedures are strictly by doctor's prescription.",
     },
+    "cancellation_policy": {
+        "uz": "Kelishdan 7 kun oldin bekor qilinsa to'liq pul qaytariladi. "
+              "3 kundan kam qolganda 50% ushlab qolinadi.",
+        "ru": "Полный возврат при отмене за 7 дней до заезда. "
+              "При отмене менее чем за 3 дня удерживается 50%.",
+        "en": "Full refund if cancelled 7+ days before check-in. "
+              "50% retained if cancelled less than 3 days before check-in.",
+    },
+    # Sanatorium operates 24/7; check-in/out windows are tracked separately
+    # via check_in_time / check_out_time fields.
+    "weekly_schedule": {},
     "stars": 4,
     # Note: removed "digestive" — brochure has no clear GI treatment
     "treatment_focuses": ["musculoskeletal", "cardiovascular", "respiratory", "neurological", "wellness"],
@@ -287,6 +304,11 @@ PROGRAMS = [
             "ru": "Стандарт (1–4 суток)",
             "en": "Standard (1–4 nights)",
         },
+        "description": {
+            "uz": "Qisqa muddatli dam olish: 4 mahal ovqat va asosiy maishiy xizmatlar.",
+            "ru": "Короткий отдых: 4-разовое питание и базовая инфраструктура.",
+            "en": "Short stay: 4 meals a day plus basic facilities.",
+        },
         "min_nights": 1,
         "max_nights": 4,
         "amenity_keys": BASE_AMENITY_KEYS,
@@ -296,6 +318,11 @@ PROGRAMS = [
             "uz": "Sog'lomlashtirish (5 kun)",
             "ru": "Оздоровление (5 суток)",
             "en": "Wellness (5 nights)",
+        },
+        "description": {
+            "uz": "Shifokor ko'rigi, tahlillar, fizio va gidroterapiya muolajalari kiritilgan.",
+            "ru": "Включены осмотр врача, анализы, физио- и гидротерапевтические процедуры.",
+            "en": "Includes doctor examination, lab tests, physiotherapy and hydrotherapy.",
         },
         "min_nights": 5,
         "max_nights": 6,
@@ -307,6 +334,11 @@ PROGRAMS = [
             "ru": "Лечение (7 суток)",
             "en": "Treatment (7 nights)",
         },
+        "description": {
+            "uz": "Davolash kursi: 5 kunlik paket + ozonoterapiya.",
+            "ru": "Лечебный курс: пакет 5 дней + озонотерапия.",
+            "en": "Treatment course: the 5-night package plus ozonotherapy.",
+        },
         "min_nights": 7,
         "max_nights": 9,
         "amenity_keys": BASE_AMENITY_KEYS + ["doctor_exam", "lab_tests", "physiotherapy", "hydrotherapy", "ozonotherapy"],
@@ -316,6 +348,11 @@ PROGRAMS = [
             "uz": "Intensiv davolash (10 kun)",
             "ru": "Интенсивное лечение (10 суток)",
             "en": "Intensive Treatment (10 nights)",
+        },
+        "description": {
+            "uz": "Maksimal kompleks: 7 kunlik paket + sauna va kengaytirilgan reabilitatsiya.",
+            "ru": "Максимальный комплекс: пакет 7 дней + сауна и расширенная реабилитация.",
+            "en": "Maximum care: the 7-night package plus sauna and extended rehabilitation.",
         },
         "min_nights": 10,
         "max_nights": None,
@@ -349,10 +386,33 @@ async def get_or_create_amenity(db, key: str, data: dict) -> Amenity:
     return obj
 
 
+async def purge_existing(db) -> None:
+    """Delete any pre-existing Humson Buloq sanatorium so the seed can run clean.
+
+    Cascades remove rooms, availability, programs, extra-bed configs, images and
+    the M2M amenity links. Bookings keep their FKs (set null) so historical
+    records survive a re-seed.
+    """
+    existing = (
+        await db.execute(
+            select(Sanatorium).where(Sanatorium.slug == SANATORIUM["slug"])
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        print(f"- no existing sanatorium to purge: {SANATORIUM['slug']}")
+        return
+    await db.delete(existing)
+    await db.flush()
+    print(f"✗ purged existing sanatorium: {SANATORIUM['slug']}")
+
+
 async def main() -> None:
     async with SessionLocal() as db:
 
-        # 1. Admin user
+        # 0. Purge any previous Humson Buloq rows so this run starts fresh.
+        await purge_existing(db)
+
+        # 1. Admin user (reused if it already exists — purge does not touch users)
         admin = (await db.execute(select(User).where(User.email == ADMIN["email"]))).scalar_one_or_none()
         if admin is None:
             admin = User(
@@ -364,92 +424,57 @@ async def main() -> None:
             )
             db.add(admin)
             await db.flush()
-            print(f"✓ admin: {ADMIN['email']}")
+            print(f"✓ admin created: {ADMIN['email']}")
         else:
-            print(f"- admin already exists: {ADMIN['email']}")
+            print(f"- admin reused: {ADMIN['email']}")
 
         # 2. Sanatorium
-        san = (
-            await db.execute(
-                select(Sanatorium)
-                .where(Sanatorium.slug == SANATORIUM["slug"])
-                .options(selectinload(Sanatorium.amenities))
-            )
-        ).scalar_one_or_none()
-        if san is None:
-            san = Sanatorium(
-                name=SANATORIUM["name"],
-                slug=SANATORIUM["slug"],
-                description=SANATORIUM["description"],
-                city=SANATORIUM["city"],
-                address=SANATORIUM["address"],
-                lat=SANATORIUM["lat"],
-                lng=SANATORIUM["lng"],
-                phones=SANATORIUM["phones"],
-                website=SANATORIUM["website"],
-                check_in_time=SANATORIUM["check_in_time"],
-                check_out_time=SANATORIUM["check_out_time"],
-                payment_methods=SANATORIUM["payment_methods"],
-                house_rules=SANATORIUM["house_rules"],
-                stars=SANATORIUM["stars"],
-                treatment_focuses=SANATORIUM["treatment_focuses"],
-                status=SanatoriumStatus.APPROVED,
-                admin_user_id=admin.id,
-            )
-            db.add(san)
-            await db.flush()
-            # Load the amenities collection so we can append to it
-            await db.refresh(san, ["amenities"])
-            print(f"✓ sanatorium: {san.name}")
-        else:
-            # Idempotent: update contact/policy fields in case brochure changed
-            san.phones = SANATORIUM["phones"]
-            san.website = SANATORIUM["website"]
-            san.check_in_time = SANATORIUM["check_in_time"]
-            san.check_out_time = SANATORIUM["check_out_time"]
-            san.payment_methods = SANATORIUM["payment_methods"]
-            san.house_rules = SANATORIUM["house_rules"]
-            san.treatment_focuses = SANATORIUM["treatment_focuses"]
-            print(f"- sanatorium exists, updated contact/policy fields: {san.name}")
+        san = Sanatorium(
+            name=SANATORIUM["name"],
+            slug=SANATORIUM["slug"],
+            property_type=SANATORIUM["property_type"],
+            description=SANATORIUM["description"],
+            city=SANATORIUM["city"],
+            region=SANATORIUM["region"],
+            address=SANATORIUM["address"],
+            lat=SANATORIUM["lat"],
+            lng=SANATORIUM["lng"],
+            phones=SANATORIUM["phones"],
+            website=SANATORIUM["website"],
+            check_in_time=SANATORIUM["check_in_time"],
+            check_out_time=SANATORIUM["check_out_time"],
+            payment_methods=SANATORIUM["payment_methods"],
+            house_rules=SANATORIUM["house_rules"],
+            cancellation_policy=SANATORIUM["cancellation_policy"],
+            weekly_schedule=SANATORIUM["weekly_schedule"],
+            stars=SANATORIUM["stars"],
+            treatment_focuses=SANATORIUM["treatment_focuses"],
+            status=SanatoriumStatus.APPROVED,
+            admin_user_id=admin.id,
+        )
+        db.add(san)
+        await db.flush()
+        await db.refresh(san, ["amenities"])
+        print(f"✓ sanatorium: {san.name}")
 
-        # 3. All amenities
+        # 3. Amenities — global catalog, reused across sanatoriums
         print("\nAmenities:")
         await _load_amenity_cache(db)
         amenity_map: dict[str, Amenity] = {}
         for key, data in AMENITIES.items():
             amenity_map[key] = await get_or_create_amenity(db, key, data)
 
-        # 4. Link facility amenities to sanatorium
-        existing_san_amenity_ids = {a.id for a in san.amenities} if san.amenities else set()
-        added = 0
+        # 4. Link facility amenities to the new sanatorium
         for key in SANATORIUM_AMENITY_KEYS:
-            amenity = amenity_map[key]
-            if amenity.id not in existing_san_amenity_ids:
-                san.amenities.append(amenity)
-                added += 1
-        if added:
-            await db.flush()
-            print(f"\n✓ linked {added} facility amenities to sanatorium")
-        else:
-            print("\n- sanatorium amenities already linked")
+            san.amenities.append(amenity_map[key])
+        await db.flush()
+        print(f"\n✓ linked {len(SANATORIUM_AMENITY_KEYS)} amenities to sanatorium")
 
-        # 5. Room categories + availability
+        # 5. Room categories + availability (120 days × 10 units)
         print("\nRoom categories:")
         today = date.today()
-        existing_rooms = (
-            await db.execute(
-                select(RoomCategory).where(RoomCategory.sanatorium_id == san.id)
-            )
-        ).scalars().all()
-        existing_room_names_ru = {
-            r.name.get("ru") for r in existing_rooms if isinstance(r.name, dict)
-        }
-
+        rooms_by_key: dict[str, RoomCategory] = {}
         for tmpl in ROOMS:
-            if tmpl["name"]["ru"] in existing_room_names_ru:
-                print(f"  - {tmpl['name']['ru']}")
-                continue
-
             room = RoomCategory(
                 sanatorium_id=san.id,
                 name=tmpl["name"],
@@ -463,8 +488,8 @@ async def main() -> None:
             )
             db.add(room)
             await db.flush()
+            rooms_by_key[tmpl["key"]] = room
 
-            # Availability: 120 days from today, 10 units each
             for offset in range(120):
                 db.add(RoomAvailability(
                     room_category_id=room.id,
@@ -480,38 +505,12 @@ async def main() -> None:
             )
 
         # 6. Seasonal price period (Sep 8 – Dec 30, 2025 per brochure)
-        # Each room gets a period record so dates outside this window can have
-        # different prices later (e.g. summer rates).
         print("\nSeasonal pricing (8 Sep – 30 Dec 2025):")
         season_from = date(2025, 9, 8)
         season_to = date(2025, 12, 30)
         season_label = "Сезон 8 сентября – 30 декабря 2025"
-
-        all_rooms = (
-            await db.execute(
-                select(RoomCategory).where(RoomCategory.sanatorium_id == san.id)
-            )
-        ).scalars().all()
-        room_by_ru = {
-            r.name.get("ru"): r for r in all_rooms if isinstance(r.name, dict)
-        }
-
         for tmpl in ROOMS:
-            room = room_by_ru.get(tmpl["name"]["ru"])
-            if room is None:
-                continue
-            existing = (
-                await db.execute(
-                    select(RoomPricePeriod).where(
-                        RoomPricePeriod.room_category_id == room.id,
-                        RoomPricePeriod.date_from == season_from,
-                        RoomPricePeriod.date_to == season_to,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing:
-                print(f"  - {tmpl['name']['ru']}")
-                continue
+            room = rooms_by_key[tmpl["key"]]
             db.add(RoomPricePeriod(
                 room_category_id=room.id,
                 label=season_label,
@@ -527,18 +526,6 @@ async def main() -> None:
         # 7. Extra bed configs
         print("\nExtra bed configs:")
         for bed in EXTRA_BEDS:
-            ru_name = bed["name"]["ru"]
-            existing = (
-                await db.execute(
-                    select(ExtraBedConfig).where(
-                        ExtraBedConfig.sanatorium_id == san.id,
-                        ExtraBedConfig.price_per_night == bed["price_per_night"],
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing:
-                print(f"  - {ru_name}")
-                continue
             db.add(ExtraBedConfig(
                 sanatorium_id=san.id,
                 name=bed["name"],
@@ -548,26 +535,15 @@ async def main() -> None:
                 is_active=True,
             ))
             await db.flush()
-            print(f"  ✓ {ru_name} — {bed['price_per_night']:,.0f} UZS/night")
+            print(f"  ✓ {bed['name']['ru']} — {bed['price_per_night']:,.0f} UZS/night")
 
-        # 8. Treatment programs
+        # 8. Treatment programs (bundled with room booking; no standalone price)
         print("\nTreatment programs:")
         for prog in PROGRAMS:
-            existing = (
-                await db.execute(
-                    select(TreatmentProgram).where(
-                        TreatmentProgram.sanatorium_id == san.id,
-                        TreatmentProgram.min_nights == prog["min_nights"],
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing:
-                print(f"  - {prog['name']['ru']}")
-                continue
-
             program = TreatmentProgram(
                 sanatorium_id=san.id,
                 name=prog["name"],
+                description=prog["description"],
                 min_nights=prog["min_nights"],
                 max_nights=prog["max_nights"],
                 is_active=True,

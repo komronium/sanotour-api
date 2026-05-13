@@ -25,6 +25,11 @@ class BookingStatus(StrEnum):
     COMPLETED = "completed"
 
 
+class BookingType(StrEnum):
+    ROOM = "room"
+    SESSION = "session"
+
+
 class Booking(Base):
     __tablename__ = "bookings"
 
@@ -38,6 +43,21 @@ class Booking(Base):
     )
     room_category_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("room_categories.id", ondelete="SET NULL"), index=True
+    )
+    program_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("treatment_programs.id", ondelete="SET NULL"), index=True
+    )
+
+    booking_type: Mapped["BookingType"] = mapped_column(
+        SQLEnum(
+            BookingType,
+            native_enum=False,
+            length=20,
+            values_callable=lambda e: [x.value for x in e],
+        ),
+        nullable=False,
+        default=BookingType.ROOM,
+        index=True,
     )
 
     check_in: Mapped[date] = mapped_column(Date, nullable=False)

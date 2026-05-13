@@ -2,9 +2,21 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Table, Uuid, func
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Table,
+    Uuid,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -49,6 +61,14 @@ class Amenity(Base):
 
 
 class TreatmentProgram(Base):
+    """Bookable program offered by a sanatorium or wellness center.
+
+    Two flavours coexist in this table:
+    - Sanatorium medical program: `min_nights`/`max_nights` set, `price` null (bundled into the room stay).
+    - Wellness program (session/retreat): `price` + `currency` set; `duration_minutes` for sub-day
+      sessions, or `min_nights`/`max_nights` for multi-day retreats.
+    """
+
     __tablename__ = "treatment_programs"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -56,8 +76,34 @@ class TreatmentProgram(Base):
         Uuid, ForeignKey("sanatoriums.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
-    min_nights: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Length
+    min_nights: Mapped[int | None] = mapped_column(Integer)
     max_nights: Mapped[int | None] = mapped_column(Integer)
+    duration_minutes: Mapped[int | None] = mapped_column(Integer)
+
+    # Pricing (wellness sessions; null for bundled sanatorium programs)
+    price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    currency: Mapped[str | None] = mapped_column(String(3))
+
+    # Instructor / staff
+    instructor_name: Mapped[str | None] = mapped_column(String(255))
+    instructor_bio: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
+    # Group capacity per session
+    group_size_min: Mapped[int | None] = mapped_column(Integer)
+    group_size_max: Mapped[int | None] = mapped_column(Integer)
+
+    # Practical info shown on detail page
+    what_to_bring: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

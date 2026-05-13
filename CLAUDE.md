@@ -2,8 +2,12 @@
 
 ## Loyiha haqida
 
-**uzwellness.com** — O'zbekistondagi sanatoriyalar uchun bron qilish platformasi (xalqaro mehmonlar uchun).  
+**uzwellness.com** — O'zbekistondagi sanatoriya va wellness markazlari uchun bron qilish platformasi (xalqaro mehmonlar uchun).
 Backend API: `api.uzwellness.com` | FastAPI + SQLAlchemy (async) + PostgreSQL
+
+Bitta data modelda 2 ta mahsulot turi:
+- **Sanatorium** — tibbiy kurort, sotiladigan birlik = **xona-tun** (+ ixtiyoriy bundled treatment program)
+- **Wellness markaz** — yoga studio, spa, meditatsiya, detoks; sotiladigan birlik = **program/session** (drop-in class, weekend retreat) o'z narxi bilan
 
 ## Tez ishga tushirish
 
@@ -98,7 +102,11 @@ class XyzList(BaseModel):
     offset: int
 ```
 
-## Bron yaratish — atomik tranzaksiya
+## Bron yaratish
+
+`POST /bookings` ikki shaklni qabul qiladi — `room_category_id` **yoki** `program_id` (bittasi majburiy, ikkalovi birdaniga emas). `BookingCreate` schemasidagi `model_validator` buni majburlaydi.
+
+### Room booking — atomik tranzaksiya
 
 `booking_service.py::create()` ichida:
 1. `SELECT room FOR UPDATE` — xona qatorini lock
@@ -110,7 +118,19 @@ class XyzList(BaseModel):
 7. `calculate_stay_total()` — har kunning narxini yig'ish (Juma/Shanba = weekend narx)
 8. Extra o'rinlarni tekshir va narxga qo'sh
 9. `final_price` snapshot (markup/chegirma keyinchalik o'zgarsa ham bron narxi o'zgarmaydi)
-10. `COMMIT`
+10. `booking_type = ROOM`, `COMMIT`
+
+### Session booking
+
+`booking_service.py::_create_session()` ichida:
+1. `SELECT program` — `is_active` va `price`+`currency` to'ldirilgan bo'lishi shart
+2. Sanatoriya `approved` ekanligini tekshir
+3. `group_size_max` belgilangan bo'lsa, `guests <= group_size_max`
+4. `check_out = check_out or check_in` (single-day session uchun OK)
+5. `final_price = program.price × guests` (snapshot)
+6. `booking_type = SESSION`, room_category_id = NULL, `COMMIT`
+
+Cancel: room booking sanalardagi `units_available` ni qaytaradi; session booking faqat statusni `cancelled` qiladi.
 
 ## Narx hisoblash
 
@@ -135,42 +155,77 @@ enrich_room(room, rate)             # → final_price, final_price_weekend, UZS/
 
 ```
 users → sanatoriums ──────────────────────────────── sanatorium_images
+              │       (property_type: sanatorium | wellness)
+              │       (wellness_category: spa_resort | yoga_retreat | ...)
               │
               ├─→ room_categories ──→ room_availability
+              │         │           ──→ room_price_periods (mavsumiy)
               │         └──────────→ bookings ──→ notifications
               │                           └──→ booking_extra_beds
               │
-              ├─→ extra_bed_configs          (qo'shimcha o'rin turlari: bolalar, qo'shimcha karavot)
+              ├─→ extra_bed_configs          (qo'shimcha o'rin: bolalar, karavot)
               │
-              └─→ treatment_programs ←──→ amenities   (program_amenities M2M)
+              ├─→ treatment_programs ←──→ amenities  (program_amenities M2M)
+              │         │  (price+currency yoki min_nights — ikki "ko'rinish")
+              │         └────→ bookings (booking_type='session')
+              │
+              └─→ sanatorium_reviews
 
 exchange_rates (alohida)
 ```
+
+### Property turlari
+
+`sanatoriums` jadvalining bitta yozuvi `property_type` orqali ajratiladi:
+
+| Maydon | SANATORIUM | WELLNESS |
+|---|---|---|
+| `property_type` | `sanatorium` | `wellness` |
+| `wellness_category` | `null` | `spa_resort` / `yoga_retreat` / `meditation_center` / `fitness_resort` / `beauty_spa` / `digital_detox` |
+| Asosiy inventar | `RoomCategory` (xona-tun) | `TreatmentProgram` (narx bilan) |
+| Listing filtri | `region`, `treatment_focus`, `min_rating` | `wellness_category`, `city`, `min_rating` |
+| Booking turi | `room` (availability lock) | `session` (`program.price × guests`) |
 
 ### Jadvallar xususiyatlari
 
 | Jadval | Muhim maydonlar |
 |---|---|
+| `sanatoriums` | `property_type`, `wellness_category` (nullable), `region` (nullable), `weekly_schedule` JSONB, `cancellation_policy` JSONB, `house_rules` JSONB |
 | `room_categories` | `base_price` (weekday), `base_price_weekend` (null=weekday bilan bir xil), `discount_percent` (null=chegirma yo'q), `markup_percent` |
 | `room_availability` | `UNIQUE(room_category_id, date)` — bir kunda bitta qator |
-| `bookings.final_price` | TOTAL stay narxi snapshot (markup/chegirma freeze) |
+| `room_price_periods` | Mavsumiy narx (date_from–date_to inclusive); shu oraliqdagi sanalar uchun room defaultlari override qilinadi |
+| `bookings` | `booking_type` (`room` yoki `session`), `room_category_id` XOR `program_id`, `final_price` snapshot |
 | `booking_extra_beds` | `name_snapshot`, `price_per_night_snapshot` — freeze qilingan |
 | `extra_bed_configs` | Sanatoriya adminsi belgilaydi (masalan "Bolalar 4-10 yosh: 500k/kun") |
-| `amenities` | Global katalog (super_admin boshqaradi), `category` field bor |
-| `treatment_programs` | `min_nights` + `max_nights` — qolish muddatiga qarab xizmatlar paketi |
-| FK strategiya | `SET NULL` — user/room o'chsa, bron tarixi saqlanadi |
+| `amenities` | Global katalog (super_admin boshqaradi), `category`: `facility`/`medical`/`nutrition`/`wellness` |
+| `treatment_programs` | Ikki "shakl": **bundled** (`min_nights`+`max_nights`, narx yo'q — xona narxiga kiradi) yoki **standalone** (`price`+`currency`, ixtiyoriy `duration_minutes`, `instructor_name`, `instructor_bio`, `group_size_min/max`, `what_to_bring`) |
+| FK strategiya | `SET NULL` — user/room/program o'chsa, bron tarixi saqlanadi |
 
 ## Endpoint'lar xaritasi
 
 ```
-# Xonalar
+# Sanatoriumlar + Wellness markazlari (bitta endpoint, property_type filter bilan)
+GET       /sanatoriums                ?property_type=sanatorium yoki wellness
+                                      filterlar: city, region, wellness_category,
+                                      stars, min_rating, amenity_ids,
+                                      treatment_focus, q, sort, limit, offset
+GET/POST  /sanatoriums                ko'rish / yaratish
+GET/PATCH /sanatoriums/{id}           detail / yangilash
+POST      /sanatoriums/{id}/approve   (super_admin)
+POST      /sanatoriums/{id}/images    rasm yuklash
+
+# Xonalar (faqat property_type=sanatorium uchun ma'noli)
 GET/POST  /rooms                      sanatoriumga xona qo'shish/ko'rish
 GET       /rooms/search               mavjud xonalar qidirish
 GET/PATCH /rooms/{id}                 xona ma'lumotlari
 GET/POST  /rooms/{id}/availability    mavjudlik ko'rish/bulk yaratish
 
-# Bronlash
-POST      /bookings                   bron yaratish (extra_beds qo'shish mumkin)
+# Programlar (sanatoriya bundle YOKI wellness session — narx bilan)
+GET/POST  /programs?sanatorium_id=X
+GET/PATCH/DELETE  /programs/{id}
+
+# Bronlash (room va session)
+POST      /bookings                   { room_category_id | program_id, ... }
 GET       /bookings                   bronlar ro'yxati (RBAC)
 PATCH     /bookings/{id}/cancel       bekor qilish
 
@@ -178,19 +233,13 @@ PATCH     /bookings/{id}/cancel       bekor qilish
 GET/POST  /amenities
 GET/PATCH/DELETE  /amenities/{id}
 
-# Davolash dasturlari (admin — o'z sanatoriyasi uchun)
-GET/POST  /programs?sanatorium_id=X
-GET/PATCH/DELETE  /programs/{id}
-
 # Qo'shimcha o'rinlar (admin — o'z sanatoriyasi uchun)
 GET/POST  /extra-beds?sanatorium_id=X
 GET/PATCH/DELETE  /extra-beds/{id}
 
-# Sanatoriyalar
-GET/POST  /sanatoriums
-GET/PATCH /sanatoriums/{slug}
-POST      /sanatoriums/{id}/approve   (super_admin)
-POST      /sanatoriums/{id}/images    rasm yuklash
+# Reviews
+GET/POST  /sanatoriums/{id}/reviews
+PATCH/DELETE  /reviews/{id}
 ```
 
 ## Test infratuzilmasi

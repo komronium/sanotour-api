@@ -80,7 +80,7 @@ class AmenityService:
             select(TreatmentProgram).where(TreatmentProgram.sanatorium_id == sanatorium_id).subquery()
         ))).scalar_one()
         rows = (await self.db.execute(
-            base.order_by(TreatmentProgram.min_nights.asc()).limit(limit).offset(offset)
+            base.order_by(TreatmentProgram.created_at.asc()).limit(limit).offset(offset)
         )).scalars().all()
         return rows, total
 
@@ -89,16 +89,34 @@ class AmenityService:
         if sanatorium is None:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sanatorium not found or not accessible")
 
-        if payload.max_nights is not None and payload.max_nights < payload.min_nights:
+        if (
+            payload.min_nights is not None
+            and payload.max_nights is not None
+            and payload.max_nights < payload.min_nights
+        ):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_nights must be >= min_nights")
+        if (payload.price is None) != (payload.currency is None):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="price and currency must be set together",
+            )
 
         amenities = await self._fetch_amenities(payload.amenity_ids)
 
         program = TreatmentProgram(
             sanatorium_id=payload.sanatorium_id,
             name=payload.name.model_dump(exclude_none=True),
+            description=payload.description.model_dump(exclude_none=True),
             min_nights=payload.min_nights,
             max_nights=payload.max_nights,
+            duration_minutes=payload.duration_minutes,
+            price=payload.price,
+            currency=payload.currency,
+            instructor_name=payload.instructor_name,
+            instructor_bio=payload.instructor_bio.model_dump(exclude_none=True),
+            group_size_min=payload.group_size_min,
+            group_size_max=payload.group_size_max,
+            what_to_bring=payload.what_to_bring.model_dump(exclude_none=True),
             amenities=amenities,
         )
         self.db.add(program)
@@ -113,12 +131,15 @@ class AmenityService:
         data = payload.model_dump(exclude_unset=True)
         amenity_ids = data.pop("amenity_ids", None)
 
-        if "name" in data and data["name"] is not None:
-            data["name"] = {k: v for k, v in data["name"].items() if v is not None}
+        for translation_field in ("name", "description", "instructor_bio", "what_to_bring"):
+            if translation_field in data and data[translation_field] is not None:
+                data[translation_field] = {
+                    k: v for k, v in data[translation_field].items() if v is not None
+                }
 
         min_nights = data.get("min_nights", program.min_nights)
         max_nights = data.get("max_nights", program.max_nights)
-        if max_nights is not None and max_nights < min_nights:
+        if min_nights is not None and max_nights is not None and max_nights < min_nights:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="max_nights must be >= min_nights")
 
         for field, value in data.items():

@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from fastapi import (
@@ -14,7 +15,7 @@ from fastapi import (
 
 from app.api.deps import CurrentUser, OptionalUser, require_roles
 from app.core.config import settings
-from app.models.sanatorium import SanatoriumStatus
+from app.models.sanatorium import PropertyType, SanatoriumStatus, WellnessCategory
 from app.models.user import User, UserRole
 from app.schemas.sanatorium import (
     SanatoriumCreate,
@@ -57,24 +58,32 @@ async def list_sanatoriums(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     city: str | None = Query(default=None, max_length=120),
+    region: str | None = Query(default=None, max_length=120),
     status_filter: SanatoriumStatus | None = Query(default=None, alias="status"),
     stars: int | None = Query(default=None, ge=1, le=5),
+    min_rating: Decimal | None = Query(default=None, ge=0, le=5),
     q: str | None = Query(default=None, max_length=200),
     sort: SortField = Query(default="-created_at"),
     amenity_ids: Annotated[list[uuid.UUID] | None, Query()] = None,
     treatment_focus: str | None = Query(default=None, max_length=60),
+    property_type: PropertyType | None = Query(default=None),
+    wellness_category: WellnessCategory | None = Query(default=None),
 ) -> SanatoriumList:
     items, total = await sanatoriums.list_for_user(
         user=current_user,
         limit=limit,
         offset=offset,
         city=city,
+        region=region,
         status_filter=status_filter,
         stars=stars,
+        min_rating=min_rating,
         q=q,
         sort=sort,
         amenity_ids=amenity_ids,
         treatment_focus=treatment_focus,
+        property_type=property_type,
+        wellness_category=wellness_category,
     )
     return SanatoriumList(
         items=[SanatoriumRead.model_validate(s) for s in items],

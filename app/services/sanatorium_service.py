@@ -2,6 +2,7 @@ import re
 import unicodedata
 import uuid
 from collections.abc import Sequence
+from decimal import Decimal
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select, update
@@ -10,7 +11,13 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.amenity import Amenity
-from app.models.sanatorium import Sanatorium, SanatoriumImage, SanatoriumStatus
+from app.models.sanatorium import (
+    PropertyType,
+    Sanatorium,
+    SanatoriumImage,
+    SanatoriumStatus,
+    WellnessCategory,
+)
 from app.models.user import User, UserRole
 from app.schemas.sanatorium import SanatoriumCreate, SanatoriumUpdate
 from app.services.storage import MIME_EXTENSIONS, StorageBackend
@@ -62,6 +69,7 @@ class SanatoriumService:
             slug=slug,
             description=payload.description.model_dump(exclude_none=True),
             city=payload.city,
+            region=payload.region,
             address=payload.address,
             lat=payload.lat,
             lng=payload.lng,
@@ -71,7 +79,11 @@ class SanatoriumService:
             check_out_time=payload.check_out_time,
             payment_methods=payload.payment_methods,
             house_rules=payload.house_rules.model_dump(exclude_none=True),
+            cancellation_policy=payload.cancellation_policy.model_dump(exclude_none=True),
+            weekly_schedule=payload.weekly_schedule,
             stars=payload.stars,
+            property_type=payload.property_type,
+            wellness_category=payload.wellness_category,
             treatment_focuses=payload.treatment_focuses,
             admin_user_id=payload.admin_user_id,
             status=SanatoriumStatus.PENDING,
@@ -88,14 +100,11 @@ class SanatoriumService:
 
         amenity_ids = data.pop("amenity_ids", None)
 
-        if "description" in data and data["description"] is not None:
-            data["description"] = {
-                k: v for k, v in data["description"].items() if v is not None
-            }
-        if "house_rules" in data and data["house_rules"] is not None:
-            data["house_rules"] = {
-                k: v for k, v in data["house_rules"].items() if v is not None
-            }
+        for translation_field in ("description", "house_rules", "cancellation_policy"):
+            if translation_field in data and data[translation_field] is not None:
+                data[translation_field] = {
+                    k: v for k, v in data[translation_field].items() if v is not None
+                }
 
         if "slug" in data and data["slug"] is not None:
             base_slug = slugify(data["slug"])
@@ -138,22 +147,34 @@ class SanatoriumService:
         limit: int,
         offset: int,
         city: str | None = None,
+        region: str | None = None,
         status_filter: SanatoriumStatus | None = None,
         stars: int | None = None,
+        min_rating: Decimal | None = None,
         q: str | None = None,
         sort: str = "-created_at",
         amenity_ids: list[uuid.UUID] | None = None,
         treatment_focus: str | None = None,
+        property_type: PropertyType | None = None,
+        wellness_category: WellnessCategory | None = None,
     ) -> tuple[Sequence[Sanatorium], int]:
         base = select(Sanatorium)
         base = _apply_visibility(base, user)
 
+        if property_type is not None:
+            base = base.where(Sanatorium.property_type == property_type)
+        if wellness_category is not None:
+            base = base.where(Sanatorium.wellness_category == wellness_category)
         if city is not None:
             base = base.where(Sanatorium.city == city)
+        if region is not None:
+            base = base.where(Sanatorium.region == region)
         if status_filter is not None:
             base = base.where(Sanatorium.status == status_filter)
         if stars is not None:
             base = base.where(Sanatorium.stars == stars)
+        if min_rating is not None:
+            base = base.where(Sanatorium.avg_rating >= min_rating)
         if q is not None and q.strip():
             base = base.where(Sanatorium.name.icontains(q.strip(), autoescape=True))
         if treatment_focus is not None:

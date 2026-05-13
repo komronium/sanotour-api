@@ -36,6 +36,20 @@ class SanatoriumStatus(StrEnum):
     REJECTED = "rejected"
 
 
+class PropertyType(StrEnum):
+    SANATORIUM = "sanatorium"
+    WELLNESS = "wellness"
+
+
+class WellnessCategory(StrEnum):
+    SPA_RESORT = "spa_resort"
+    YOGA_RETREAT = "yoga_retreat"
+    MEDITATION_CENTER = "meditation_center"
+    FITNESS_RESORT = "fitness_resort"
+    BEAUTY_SPA = "beauty_spa"
+    DIGITAL_DETOX = "digital_detox"
+
+
 class Sanatorium(Base):
     __tablename__ = "sanatoriums"
 
@@ -48,6 +62,8 @@ class Sanatorium(Base):
     description: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     city: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    # Broader area (e.g. "Tashkent Province", "Fergana Valley") — used by Sanatoriums filter
+    region: Mapped[str | None] = mapped_column(String(120), index=True)
     address: Mapped[str] = mapped_column(String(500), nullable=False)
     lat: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
     lng: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
@@ -70,8 +86,38 @@ class Sanatorium(Base):
     house_rules: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )
+    # Translations dict, e.g. {"en": "24-hour free cancellation"}
+    cancellation_policy: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
+    # Weekly opening hours, e.g. {"mon": [{"open": "06:00", "close": "22:00"}], ...}
+    weekly_schedule: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     stars: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+
+    property_type: Mapped[PropertyType] = mapped_column(
+        SQLEnum(
+            PropertyType,
+            native_enum=False,
+            length=20,
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        default=PropertyType.SANATORIUM,
+        nullable=False,
+        index=True,
+    )
+    # Only set when property_type == WELLNESS
+    wellness_category: Mapped[WellnessCategory | None] = mapped_column(
+        SQLEnum(
+            WellnessCategory,
+            native_enum=False,
+            length=30,
+            values_callable=lambda enum: [e.value for e in enum],
+        ),
+        index=True,
+    )
 
     # High-level medical/treatment categories (e.g. ["cardiovascular", "digestive"])
     treatment_focuses: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)

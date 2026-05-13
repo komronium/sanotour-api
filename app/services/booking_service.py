@@ -11,8 +11,9 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.pricing import calculate_stay_total
 from app.core.utils import date_range
+from app.models.amenity import TreatmentProgram
 from app.models.availability import RoomAvailability
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking, BookingStatus, BookingType
 from app.models.extra_bed import BookingExtraBed, ExtraBedConfig
 from app.models.notification import Notification
 from app.models.room import RoomCategory
@@ -37,7 +38,11 @@ class BookingService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="check_in must be today or in the future",
             )
-        if payload.check_out <= payload.check_in:
+
+        if payload.program_id is not None:
+            return await self._create_session(payload, user)
+
+        if payload.check_out is None or payload.check_out <= payload.check_in:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="check_out must be after check_in",
@@ -153,6 +158,7 @@ class BookingService:
         booking = Booking(
             user_id=user.id,
             room_category_id=room.id,
+            booking_type=BookingType.ROOM,
             check_in=payload.check_in,
             check_out=payload.check_out,
             guests=payload.guests,
@@ -166,6 +172,67 @@ class BookingService:
         for eb in extra_bed_records:
             eb.booking_id = booking.id
             self.db.add(eb)
+
+        self.db.add(Notification(booking_id=booking.id, type="booking_created", channel="email"))
+        await self.db.commit()
+        return await self._load_booking(booking.id)  # type: ignore[return-value]
+
+    async def _create_session(self, payload: BookingCreate, user: User) -> Booking:
+        program = (
+            await self.db.execute(
+                select(TreatmentProgram).where(TreatmentProgram.id == payload.program_id)
+            )
+        ).scalar_one_or_none()
+
+        if program is None or not program.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Program not found"
+            )
+        if program.price is None or program.currency is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Program is not bookable (no price set)",
+            )
+
+        sanatorium = (
+            await self.db.execute(
+                select(Sanatorium).where(Sanatorium.id == program.sanatorium_id)
+            )
+        ).scalar_one_or_none()
+        if sanatorium is None or sanatorium.status != SanatoriumStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Sanatorium is not available for booking",
+            )
+
+        if program.group_size_max is not None and payload.guests > program.group_size_max:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Maximum {program.group_size_max} participant(s) per session",
+            )
+
+        check_out = payload.check_out or payload.check_in
+        if check_out < payload.check_in:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="check_out must be on or after check_in",
+            )
+
+        session_total = (program.price * payload.guests).quantize(_TWO, ROUND_HALF_UP)
+
+        booking = Booking(
+            user_id=user.id,
+            program_id=program.id,
+            booking_type=BookingType.SESSION,
+            check_in=payload.check_in,
+            check_out=check_out,
+            guests=payload.guests,
+            status=BookingStatus.CONFIRMED,
+            final_price=session_total,
+            currency=program.currency,
+        )
+        self.db.add(booking)
+        await self.db.flush()
 
         self.db.add(Notification(booking_id=booking.id, type="booking_created", channel="email"))
         await self.db.commit()
@@ -221,10 +288,21 @@ class BookingService:
         if user.role == UserRole.SUPER_ADMIN:
             return stmt
         if user.role == UserRole.ADMIN:
-            return (
-                stmt.join(RoomCategory, Booking.room_category_id == RoomCategory.id)
+            room_sub = (
+                select(RoomCategory.id)
                 .join(Sanatorium, RoomCategory.sanatorium_id == Sanatorium.id)
                 .where(Sanatorium.admin_user_id == user.id)
+                .scalar_subquery()
+            )
+            program_sub = (
+                select(TreatmentProgram.id)
+                .join(Sanatorium, TreatmentProgram.sanatorium_id == Sanatorium.id)
+                .where(Sanatorium.admin_user_id == user.id)
+                .scalar_subquery()
+            )
+            return stmt.where(
+                (Booking.room_category_id.in_(room_sub))
+                | (Booking.program_id.in_(program_sub))
             )
         return stmt.where(Booking.user_id == user.id)
 
@@ -233,22 +311,23 @@ class BookingService:
     async def cancel(self, booking: Booking, user: User) -> Booking:
         self._assert_can_cancel(booking, user)
 
-        avail_rows = list(
-            (
-                await self.db.execute(
-                    select(RoomAvailability)
-                    .where(
-                        RoomAvailability.room_category_id == booking.room_category_id,
-                        RoomAvailability.date >= booking.check_in,
-                        RoomAvailability.date < booking.check_out,
+        if booking.booking_type == BookingType.ROOM and booking.room_category_id is not None:
+            avail_rows = list(
+                (
+                    await self.db.execute(
+                        select(RoomAvailability)
+                        .where(
+                            RoomAvailability.room_category_id == booking.room_category_id,
+                            RoomAvailability.date >= booking.check_in,
+                            RoomAvailability.date < booking.check_out,
+                        )
+                        .with_for_update()
                     )
-                    .with_for_update()
-                )
-            ).scalars()
-        )
+                ).scalars()
+            )
 
-        for row in avail_rows:
-            row.units_available = min(row.units_available + 1, row.units_total)
+            for row in avail_rows:
+                row.units_available = min(row.units_available + 1, row.units_total)
 
         booking.status = BookingStatus.CANCELLED
         self.db.add(Notification(booking_id=booking.id, type="booking_cancelled", channel="email"))

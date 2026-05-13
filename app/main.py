@@ -6,16 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1 import api_router
+from app.api.v1.openapi_tags import OPENAPI_TAGS
 from app.core.config import settings
-
-_OPENAPI_TAGS = [
-    {"name": "auth",           "description": "Login, logout, token refresh"},
-    {"name": "users",          "description": "User profile and management"},
-    {"name": "sanatoriums",    "description": "Sanatorium listing and management"},
-    {"name": "rooms",          "description": "Room categories, availability, search"},
-    {"name": "bookings",       "description": "Booking creation, listing, cancellation"},
-    {"name": "exchange-rates", "description": "USD/UZS exchange rate management"},
-]
 
 
 @asynccontextmanager
@@ -27,7 +19,7 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     debug=settings.DEBUG,
     lifespan=lifespan,
-    openapi_tags=_OPENAPI_TAGS,
+    openapi_tags=OPENAPI_TAGS,
 )
 
 app.add_middleware(
