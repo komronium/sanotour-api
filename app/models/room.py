@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -65,6 +66,39 @@ class RoomCategory(Base):
         back_populates="room_category",
         cascade="all, delete-orphan",
     )
+    price_periods: Mapped[list["RoomPricePeriod"]] = relationship(
+        back_populates="room_category",
+        cascade="all, delete-orphan",
+        order_by="RoomPricePeriod.date_from",
+    )
+
+
+class RoomPricePeriod(Base):
+    """Seasonal price override for a room over a date range (inclusive).
+
+    If a stay date falls inside [date_from, date_to], its prices replace the
+    room's defaults. Outside any period the room's base prices apply.
+    """
+
+    __tablename__ = "room_price_periods"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    room_category_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("room_categories.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    label: Mapped[str | None] = mapped_column(String(120))
+    date_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    date_to: Mapped[date] = mapped_column(Date, nullable=False, index=True)  # inclusive
+
+    base_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    base_price_weekend: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    discount_percent: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    room_category: Mapped["RoomCategory"] = relationship(back_populates="price_periods")
 
 
 class ExchangeRate(Base):

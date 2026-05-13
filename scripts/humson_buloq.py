@@ -7,7 +7,7 @@ Usage:
 """
 
 import asyncio
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from app.core.security import hash_password
 from app.models.amenity import Amenity, TreatmentProgram
 from app.models.availability import RoomAvailability
 from app.models.extra_bed import ExtraBedConfig
-from app.models.room import RoomCategory
+from app.models.room import RoomCategory, RoomPricePeriod
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 
@@ -47,9 +47,25 @@ SANATORIUM = {
     "address": "Bostanliq tumani, Humson qishlog'i",
     "lat": Decimal("41.6833"),
     "lng": Decimal("70.0167"),
-    "phone": "+998991006000",
+    "phones": ["+998991006000", "+998933996000", "+998773606000"],
+    "website": "https://www.humsonbuloq.uz",
+    "check_in_time": time(12, 30),
+    "check_out_time": time(10, 30),
+    "payment_methods": [
+        "cash", "bank_transfer",
+        "uzcard", "visa", "mastercard", "jcb", "unionpay", "mir",
+    ],
+    "house_rules": {
+        "uz": "Spirtli ichimliklar ichish qat'iyan taqiqlanadi. "
+              "Barcha tibbiy muolajalar faqat shifokor tayinlashi bilan amalga oshiriladi.",
+        "ru": "Распитие спиртных напитков строго запрещено. "
+              "Все медицинские процедуры строго по назначению врача.",
+        "en": "Consumption of alcoholic beverages is strictly prohibited. "
+              "All medical procedures are strictly by doctor's prescription.",
+    },
     "stars": 4,
-    "treatment_focuses": ["musculoskeletal", "cardiovascular", "respiratory", "digestive", "wellness"],
+    # Note: removed "digestive" — brochure has no clear GI treatment
+    "treatment_focuses": ["musculoskeletal", "cardiovascular", "respiratory", "neurological", "wellness"],
 }
 
 # ── room categories ────────────────────────────────────────────────────────
@@ -212,7 +228,8 @@ AMENITIES: dict[str, dict] = {
     "hand_bath":     {"name": {"uz": "Qo'l vannasi",                "ru": "Ручные ванны",                          "en": "Hand Bath"},                             "category": "medical"},
     "foot_bath":     {"name": {"uz": "Oyoq vannasi",                "ru": "Ножные ванны",                          "en": "Foot Bath"},                             "category": "medical"},
     # Physiotherapy specific
-    "ecg":           {"name": {"uz": "EKG / Elektrokardiograf",     "ru": "ЭКГ / Электрокардиограф",              "en": "ECG / Electrocardiograph"},              "category": "medical"},
+    "ecg":           {"name": {"uz": "EKG",                          "ru": "ЭКГ",                                   "en": "ECG"},                                   "category": "medical"},
+    "electrocardio": {"name": {"uz": "Elektrokardiograf",            "ru": "Электрокардиограф",                     "en": "Electrocardiograph"},                    "category": "medical"},
     "uhf":           {"name": {"uz": "UVCh-Ultraterm",              "ru": "УВЧ-Ультратерм",                        "en": "UHF Ultratherm"},                        "category": "medical"},
     "radiotherm":    {"name": {"uz": "Radioterm",                   "ru": "Радиотерм",                             "en": "Radiotherm"},                            "category": "medical"},
     "interference":  {"name": {"uz": "Interferentsoterapiya",       "ru": "Интерференцтерапия",                    "en": "Interference Therapy"},                  "category": "medical"},
@@ -232,11 +249,26 @@ AMENITIES: dict[str, dict] = {
     "lymph":         {"name": {"uz": "Limfodrenaj",                 "ru": "Лимфодренаж",                           "en": "Lymph Drainage"},                        "category": "medical"},
 }
 
-# Keys of amenities shown in the sanatorium catalog (visible to guests for filtering)
+# Keys of amenities shown in the sanatorium catalog (visible to guests for filtering).
+# Includes facilities + every hydro/physiotherapy procedure listed on the brochure,
+# so each available treatment shows up on the sanatorium page.
 SANATORIUM_AMENITY_KEYS = [
-    "meal_4x", "phytobar", "pool", "bicycles", "horse_therapy", "gym",
-    "billiards", "sports_courts", "cinema", "sauna",
+    # Nutrition + facilities
+    "meal_4x", "phytobar", "pool", "playstation", "bicycles", "horse_therapy",
+    "hair_salon", "animators", "babysitting", "gym", "billiards",
+    "sports_courts", "cinema", "sauna",
+    # High-level medical
+    "massage_local", "doctor_exam", "lab_tests",
     "physiotherapy", "hydrotherapy", "ozonotherapy",
+    # Hydrotherapy specific procedures (ГИДРОТЕРАПИЯ list)
+    "shower_circ", "shower_sharko", "shower_casc", "colon_hydro",
+    "hydro_bath", "shower_vichy", "shower_asc",
+    "pearl_bath", "hand_bath", "foot_bath",
+    # Physiotherapy specific procedures (ФИЗИОТЕРАПИЯ list)
+    "ecg", "electrocardio", "uhf", "radiotherm", "interference",
+    "stereodinator", "neurotone", "massage_table", "laser", "darsonval",
+    "hi_top", "mechano", "uv_tube", "inhalation", "magneto",
+    "infrared", "phonophore", "massage", "lymph",
 ]
 
 # ── treatment programs ─────────────────────────────────────────────────────
@@ -353,7 +385,12 @@ async def main() -> None:
                 address=SANATORIUM["address"],
                 lat=SANATORIUM["lat"],
                 lng=SANATORIUM["lng"],
-                phone=SANATORIUM["phone"],
+                phones=SANATORIUM["phones"],
+                website=SANATORIUM["website"],
+                check_in_time=SANATORIUM["check_in_time"],
+                check_out_time=SANATORIUM["check_out_time"],
+                payment_methods=SANATORIUM["payment_methods"],
+                house_rules=SANATORIUM["house_rules"],
                 stars=SANATORIUM["stars"],
                 treatment_focuses=SANATORIUM["treatment_focuses"],
                 status=SanatoriumStatus.APPROVED,
@@ -365,7 +402,15 @@ async def main() -> None:
             await db.refresh(san, ["amenities"])
             print(f"✓ sanatorium: {san.name}")
         else:
-            print(f"- sanatorium already exists: {san.name}")
+            # Idempotent: update contact/policy fields in case brochure changed
+            san.phones = SANATORIUM["phones"]
+            san.website = SANATORIUM["website"]
+            san.check_in_time = SANATORIUM["check_in_time"]
+            san.check_out_time = SANATORIUM["check_out_time"]
+            san.payment_methods = SANATORIUM["payment_methods"]
+            san.house_rules = SANATORIUM["house_rules"]
+            san.treatment_focuses = SANATORIUM["treatment_focuses"]
+            print(f"- sanatorium exists, updated contact/policy fields: {san.name}")
 
         # 3. All amenities
         print("\nAmenities:")
@@ -434,7 +479,52 @@ async def main() -> None:
                 f"(cap {tmpl['capacity']}, -20%)"
             )
 
-        # 6. Extra bed configs
+        # 6. Seasonal price period (Sep 8 – Dec 30, 2025 per brochure)
+        # Each room gets a period record so dates outside this window can have
+        # different prices later (e.g. summer rates).
+        print("\nSeasonal pricing (8 Sep – 30 Dec 2025):")
+        season_from = date(2025, 9, 8)
+        season_to = date(2025, 12, 30)
+        season_label = "Сезон 8 сентября – 30 декабря 2025"
+
+        all_rooms = (
+            await db.execute(
+                select(RoomCategory).where(RoomCategory.sanatorium_id == san.id)
+            )
+        ).scalars().all()
+        room_by_ru = {
+            r.name.get("ru"): r for r in all_rooms if isinstance(r.name, dict)
+        }
+
+        for tmpl in ROOMS:
+            room = room_by_ru.get(tmpl["name"]["ru"])
+            if room is None:
+                continue
+            existing = (
+                await db.execute(
+                    select(RoomPricePeriod).where(
+                        RoomPricePeriod.room_category_id == room.id,
+                        RoomPricePeriod.date_from == season_from,
+                        RoomPricePeriod.date_to == season_to,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing:
+                print(f"  - {tmpl['name']['ru']}")
+                continue
+            db.add(RoomPricePeriod(
+                room_category_id=room.id,
+                label=season_label,
+                date_from=season_from,
+                date_to=season_to,
+                base_price=tmpl["base_price"],
+                base_price_weekend=tmpl["base_price_weekend"],
+                discount_percent=tmpl["discount_percent"],
+            ))
+            print(f"  ✓ {tmpl['name']['ru']}")
+        await db.flush()
+
+        # 7. Extra bed configs
         print("\nExtra bed configs:")
         for bed in EXTRA_BEDS:
             ru_name = bed["name"]["ru"]
@@ -460,7 +550,7 @@ async def main() -> None:
             await db.flush()
             print(f"  ✓ {ru_name} — {bed['price_per_night']:,.0f} UZS/night")
 
-        # 7. Treatment programs
+        # 8. Treatment programs
         print("\nTreatment programs:")
         for prog in PROGRAMS:
             existing = (

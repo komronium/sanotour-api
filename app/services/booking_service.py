@@ -50,7 +50,8 @@ class BookingService:
             await self.db.execute(
                 select(RoomCategory)
                 .where(RoomCategory.id == payload.room_category_id)
-                .with_for_update()
+                .options(selectinload(RoomCategory.price_periods))
+                .with_for_update(of=RoomCategory)
             )
         ).scalar_one_or_none()
 
@@ -111,7 +112,8 @@ class BookingService:
             row.units_available -= 1
 
         # Total room price: sum of per-night prices (weekday/weekend + markup + discount)
-        room_total = calculate_stay_total(room, list(all_dates))
+        # Seasonal `price_periods` (if any) override base prices on covered dates.
+        room_total = calculate_stay_total(room, list(all_dates), room.price_periods)
 
         # Validate and price extra beds
         extra_bed_records: list[BookingExtraBed] = []

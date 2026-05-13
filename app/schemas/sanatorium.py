@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,6 +12,11 @@ TREATMENT_FOCUS_VALUES = frozenset({
     "cardiovascular", "digestive", "musculoskeletal",
     "respiratory", "neurological", "dermatology",
     "endocrine", "wellness",
+})
+
+PAYMENT_METHOD_VALUES = frozenset({
+    "cash", "bank_transfer",
+    "uzcard", "visa", "mastercard", "jcb", "unionpay", "mir",
 })
 
 
@@ -33,7 +38,12 @@ class SanatoriumBase(BaseModel):
     address: str = Field(min_length=1, max_length=500)
     lat: Decimal | None = Field(default=None, ge=-90, le=90)
     lng: Decimal | None = Field(default=None, ge=-180, le=180)
-    phone: str | None = Field(default=None, max_length=30)
+    phones: list[str] = Field(default_factory=list, max_length=10)
+    website: str | None = Field(default=None, max_length=255)
+    check_in_time: time | None = None
+    check_out_time: time | None = None
+    payment_methods: list[str] = Field(default_factory=list)
+    house_rules: Translations = Field(default_factory=Translations)
     stars: int = Field(ge=1, le=5)
     treatment_focuses: list[str] = Field(default_factory=list)
 
@@ -52,7 +62,12 @@ class SanatoriumUpdate(BaseModel):
     address: str | None = Field(default=None, min_length=1, max_length=500)
     lat: Decimal | None = Field(default=None, ge=-90, le=90)
     lng: Decimal | None = Field(default=None, ge=-180, le=180)
-    phone: str | None = Field(default=None, max_length=30)
+    phones: list[str] | None = Field(default=None, max_length=10)
+    website: str | None = Field(default=None, max_length=255)
+    check_in_time: time | None = None
+    check_out_time: time | None = None
+    payment_methods: list[str] | None = None
+    house_rules: Translations | None = None
     stars: int | None = Field(default=None, ge=1, le=5)
     admin_user_id: uuid.UUID | None = None
     treatment_focuses: list[str] | None = None
@@ -70,7 +85,12 @@ class SanatoriumRead(BaseModel):
     address: str
     lat: Decimal | None
     lng: Decimal | None
-    phone: str | None
+    phones: list[str]
+    website: str | None
+    check_in_time: time | None
+    check_out_time: time | None
+    payment_methods: list[str]
+    house_rules: Translations
     stars: int
     status: SanatoriumStatus
     treatment_focuses: list[str]

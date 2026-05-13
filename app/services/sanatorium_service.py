@@ -65,7 +65,12 @@ class SanatoriumService:
             address=payload.address,
             lat=payload.lat,
             lng=payload.lng,
-            phone=payload.phone,
+            phones=payload.phones,
+            website=payload.website,
+            check_in_time=payload.check_in_time,
+            check_out_time=payload.check_out_time,
+            payment_methods=payload.payment_methods,
+            house_rules=payload.house_rules.model_dump(exclude_none=True),
             stars=payload.stars,
             treatment_focuses=payload.treatment_focuses,
             admin_user_id=payload.admin_user_id,
@@ -86,6 +91,10 @@ class SanatoriumService:
         if "description" in data and data["description"] is not None:
             data["description"] = {
                 k: v for k, v in data["description"].items() if v is not None
+            }
+        if "house_rules" in data and data["house_rules"] is not None:
+            data["house_rules"] = {
+                k: v for k, v in data["house_rules"].items() if v is not None
             }
 
         if "slug" in data and data["slug"] is not None:

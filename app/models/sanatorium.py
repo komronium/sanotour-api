@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -14,6 +14,7 @@ from sqlalchemy import (
     Numeric,
     SmallInteger,
     String,
+    Time,
     Uuid,
     func,
 )
@@ -50,7 +51,25 @@ class Sanatorium(Base):
     address: Mapped[str] = mapped_column(String(500), nullable=False)
     lat: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
     lng: Mapped[Decimal | None] = mapped_column(Numeric(9, 6))
-    phone: Mapped[str | None] = mapped_column(String(30))
+
+    # One or more contact numbers (printed on price lists, brochures)
+    phones: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    website: Mapped[str | None] = mapped_column(String(255))
+
+    # Local times (e.g. 12:30 check-in, 10:30 checkout)
+    check_in_time: Mapped[time | None] = mapped_column(Time)
+    check_out_time: Mapped[time | None] = mapped_column(Time)
+
+    # Accepted payment methods, e.g. ["cash", "uzcard", "visa", "mastercard", "jcb", "unionpay", "mir"]
+    payment_methods: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    # Translations dict, e.g. {"ru": "Распитие спиртных напитков запрещено", "en": "..."}
+    house_rules: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     stars: Mapped[int] = mapped_column(SmallInteger, nullable=False)
 
