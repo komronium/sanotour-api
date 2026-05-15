@@ -46,13 +46,14 @@ async def test_create_as_super_admin_works(
     assert body["description"]["ru"] is None
 
 
-async def test_create_as_admin_returns_403(
-    client: AsyncClient, admin_headers
+async def test_create_as_admin_auto_assigns_owner(
+    client: AsyncClient, admin_headers, admin_user
 ) -> None:
     resp = await client.post(
         "/api/v1/sanatoriums", json=CREATE_PAYLOAD, headers=admin_headers
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["admin_user_id"] == str(admin_user.id)
 
 
 async def test_create_as_customer_returns_403(
