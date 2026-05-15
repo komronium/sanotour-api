@@ -122,6 +122,10 @@ class RoomService:
         stmt = select(Sanatorium).where(Sanatorium.id == room.sanatorium_id)
         return (await self.db.execute(stmt)).scalar_one_or_none()
 
+    async def delete(self, room: RoomCategory) -> None:
+        await self.db.delete(room)
+        await self.db.commit()
+
     # ── availability ───────────────────────────────────────────────────────
 
     async def bulk_create_availability(

@@ -1,0 +1,33 @@
+import uuid
+from datetime import datetime
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict
+
+from app.models.payment import PaymentMethod, PaymentStatus
+
+
+class PaymentInitiateRequest(BaseModel):
+    booking_id: uuid.UUID
+    method: PaymentMethod
+
+
+class PaymentInitiateResponse(BaseModel):
+    payment_id: uuid.UUID
+    status: PaymentStatus
+    redirect_url: str | None = None
+
+
+class PaymentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    booking_id: uuid.UUID
+    method: PaymentMethod
+    status: PaymentStatus
+    amount: Decimal
+    currency: str
+    merchant_trans_id: str | None
+    provider_payment_id: str | None
+    created_at: datetime
+    paid_at: datetime | None

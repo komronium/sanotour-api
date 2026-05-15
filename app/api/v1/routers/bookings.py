@@ -3,13 +3,19 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import CurrentUser
+from app.core.rate_limit import booking_rate_limit
 from app.schemas.booking import BookingCreate, BookingList, BookingRead
 from app.services.booking_service import BookingService, get_booking_service
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
 
 
-@router.post("", response_model=BookingRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=BookingRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(booking_rate_limit)],
+)
 async def create_booking(
     payload: BookingCreate,
     current_user: CurrentUser,

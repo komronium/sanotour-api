@@ -14,17 +14,29 @@ require_admin_or_above = require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
 @router.get("", response_model=ReviewList)
 async def list_reviews(
-    sanatorium_id: uuid.UUID = Query(...),
+    sanatorium_id: uuid.UUID | None = Query(default=None),
+    is_visible: bool | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: OptionalUser = None,
     svc: ReviewService = Depends(get_review_service),
 ) -> ReviewList:
-    visible_only = current_user is None or current_user.role not in (
+    is_admin = current_user is not None and current_user.role in (
         UserRole.ADMIN, UserRole.SUPER_ADMIN
     )
-    items, total = await svc.list_for_sanatorium(
-        sanatorium_id, limit=limit, offset=offset, visible_only=visible_only
+    if sanatorium_id is None and not is_admin:
+        # Customers/anonymous must scope to a sanatorium
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="sanatorium_id is required",
+        )
+    visible_only = not is_admin
+    items, total = await svc.list_reviews(
+        sanatorium_id=sanatorium_id,
+        is_visible=is_visible if is_admin else None,
+        visible_only=visible_only,
+        limit=limit,
+        offset=offset,
     )
     return ReviewList(items=list(items), total=total, limit=limit, offset=offset)
 

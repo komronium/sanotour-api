@@ -1,12 +1,13 @@
 import uuid
 from collections.abc import Sequence
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password
+from app.models.sanatorium import Sanatorium
 from app.models.user import User, UserRole
 from app.schemas.user import UserCreate, UserUpdate
 
@@ -69,6 +70,15 @@ class UserService:
 
     async def update(self, user: User, payload: UserUpdate) -> User:
         data = payload.model_dump(exclude_unset=True)
+        if data.get("sanatorium_id") is not None:
+            exists = (await self.db.execute(
+                select(Sanatorium.id).where(Sanatorium.id == data["sanatorium_id"])
+            )).scalar_one_or_none()
+            if exists is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Sanatorium not found",
+                )
         for field, value in data.items():
             setattr(user, field, value)
         await self.db.commit()

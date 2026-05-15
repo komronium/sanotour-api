@@ -19,6 +19,29 @@ class ReviewService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def list_reviews(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        sanatorium_id: uuid.UUID | None = None,
+        is_visible: bool | None = None,
+        visible_only: bool = True,
+    ) -> tuple[Sequence[SanatoriumReview], int]:
+        base = select(SanatoriumReview)
+        if sanatorium_id is not None:
+            base = base.where(SanatoriumReview.sanatorium_id == sanatorium_id)
+        if is_visible is not None:
+            base = base.where(SanatoriumReview.is_visible.is_(is_visible))
+        elif visible_only:
+            base = base.where(SanatoriumReview.is_visible.is_(True))
+
+        total = (await self.db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
+        rows = (await self.db.execute(
+            base.order_by(SanatoriumReview.created_at.desc()).limit(limit).offset(offset)
+        )).scalars().all()
+        return rows, total
+
     async def list_for_sanatorium(
         self,
         sanatorium_id: uuid.UUID,
@@ -27,15 +50,12 @@ class ReviewService:
         offset: int,
         visible_only: bool = True,
     ) -> tuple[Sequence[SanatoriumReview], int]:
-        base = select(SanatoriumReview).where(SanatoriumReview.sanatorium_id == sanatorium_id)
-        if visible_only:
-            base = base.where(SanatoriumReview.is_visible.is_(True))
-
-        total = (await self.db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-        rows = (await self.db.execute(
-            base.order_by(SanatoriumReview.created_at.desc()).limit(limit).offset(offset)
-        )).scalars().all()
-        return rows, total
+        return await self.list_reviews(
+            limit=limit,
+            offset=offset,
+            sanatorium_id=sanatorium_id,
+            visible_only=visible_only,
+        )
 
     async def create(
         self, sanatorium_id: uuid.UUID, payload: ReviewCreate, user: User

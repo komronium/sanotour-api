@@ -20,6 +20,11 @@ from app.models.room import RoomCategory
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate
+from app.services.email_service import (
+    BookingEmailContext,
+    send_booking_cancelled,
+    send_booking_received,
+)
 
 _CANCELLABLE = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
 _TWO = Decimal("0.01")
@@ -175,6 +180,9 @@ class BookingService:
 
         self.db.add(Notification(booking_id=booking.id, type="booking_created", channel="email"))
         await self.db.commit()
+        await self._send_booking_email(
+            booking, user, sanatorium.name, kind="received"
+        )
         return await self._load_booking(booking.id)  # type: ignore[return-value]
 
     async def _create_session(self, payload: BookingCreate, user: User) -> Booking:
@@ -236,6 +244,9 @@ class BookingService:
 
         self.db.add(Notification(booking_id=booking.id, type="booking_created", channel="email"))
         await self.db.commit()
+        await self._send_booking_email(
+            booking, user, sanatorium.name, kind="received"
+        )
         return await self._load_booking(booking.id)  # type: ignore[return-value]
 
     # ── list / get ─────────────────────────────────────────────────────────
@@ -332,7 +343,53 @@ class BookingService:
         booking.status = BookingStatus.CANCELLED
         self.db.add(Notification(booking_id=booking.id, type="booking_cancelled", channel="email"))
         await self.db.commit()
+        sanatorium_name = await self._lookup_sanatorium_name(booking)
+        if sanatorium_name is not None:
+            await self._send_booking_email(
+                booking, user, sanatorium_name, kind="cancelled"
+            )
         return await self._load_booking(booking.id)  # type: ignore[return-value]
+
+    async def _send_booking_email(
+        self,
+        booking: Booking,
+        user: User,
+        sanatorium_name: str,
+        *,
+        kind: str,
+    ) -> None:
+        if not user.email:
+            return
+        ctx = BookingEmailContext(
+            booking_code=booking.code,
+            sanatorium_name=sanatorium_name,
+            check_in=booking.check_in,
+            check_out=booking.check_out,
+            guest_name=user.full_name or user.email,
+            total_price=booking.final_price,
+            currency=booking.currency,
+        )
+        if kind == "received":
+            send_booking_received(to=user.email, ctx=ctx)
+        elif kind == "cancelled":
+            send_booking_cancelled(to=user.email, ctx=ctx)
+
+    async def _lookup_sanatorium_name(self, booking: Booking) -> str | None:
+        if booking.room_category_id is not None:
+            row = (await self.db.execute(
+                select(Sanatorium.name)
+                .join(RoomCategory, RoomCategory.sanatorium_id == Sanatorium.id)
+                .where(RoomCategory.id == booking.room_category_id)
+            )).scalar_one_or_none()
+            return row
+        if booking.program_id is not None:
+            row = (await self.db.execute(
+                select(Sanatorium.name)
+                .join(TreatmentProgram, TreatmentProgram.sanatorium_id == Sanatorium.id)
+                .where(TreatmentProgram.id == booking.program_id)
+            )).scalar_one_or_none()
+            return row
+        return None
 
     def _assert_can_cancel(self, booking: Booking, user: User) -> None:
         if booking.status not in _CANCELLABLE:

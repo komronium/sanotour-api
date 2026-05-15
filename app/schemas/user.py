@@ -21,6 +21,7 @@ class UserUpdate(BaseModel):
     phone: str | None = Field(default=None, max_length=32)
     role: UserRole | None = None
     is_active: bool | None = None
+    sanatorium_id: uuid.UUID | None = None
 
 
 class UserRead(UserBase):
@@ -29,6 +30,7 @@ class UserRead(UserBase):
     id: uuid.UUID
     role: UserRole
     is_active: bool
+    sanatorium_id: uuid.UUID | None = None
     created_at: datetime
 
 

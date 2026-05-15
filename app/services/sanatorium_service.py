@@ -132,6 +132,59 @@ class SanatoriumService:
         await self.db.commit()
         return await self._reload(sanatorium.id)
 
+    async def reject(self, sanatorium: Sanatorium) -> Sanatorium:
+        if sanatorium.status == SanatoriumStatus.REJECTED:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Sanatorium already rejected",
+            )
+        sanatorium.status = SanatoriumStatus.REJECTED
+        await self.db.commit()
+        return await self._reload(sanatorium.id)
+
+    async def delete_image(
+        self, image: SanatoriumImage, storage: StorageBackend
+    ) -> None:
+        # Strip the URL prefix to reconstruct the storage key
+        from app.core.config import settings
+        prefix = settings.UPLOAD_URL_PREFIX.rstrip("/") + "/"
+        key = image.url[len(prefix):] if image.url.startswith(prefix) else image.url
+        await storage.delete(key=key)
+        await self.db.delete(image)
+        await self.db.commit()
+
+    async def update_image(
+        self,
+        image: SanatoriumImage,
+        *,
+        is_primary: bool | None = None,
+        order: int | None = None,
+        caption: str | None = None,
+    ) -> SanatoriumImage:
+        if is_primary is True:
+            await self.db.execute(
+                update(SanatoriumImage)
+                .where(SanatoriumImage.sanatorium_id == image.sanatorium_id)
+                .where(SanatoriumImage.id != image.id)
+                .where(SanatoriumImage.is_primary.is_(True))
+                .values(is_primary=False)
+            )
+            image.is_primary = True
+        elif is_primary is False:
+            image.is_primary = False
+        if order is not None:
+            image.order = order
+        if caption is not None:
+            image.caption = caption
+        await self.db.commit()
+        await self.db.refresh(image)
+        return image
+
+    async def get_image(self, image_id: uuid.UUID) -> SanatoriumImage | None:
+        return (await self.db.execute(
+            select(SanatoriumImage).where(SanatoriumImage.id == image_id)
+        )).scalar_one_or_none()
+
     async def get_visible(
         self, sanatorium_id: uuid.UUID, user: User | None
     ) -> Sanatorium | None:

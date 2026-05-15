@@ -40,6 +40,27 @@ class Settings(BaseSettings):
     UPLOAD_URL_PREFIX: str = "/uploads"
     MAX_UPLOAD_SIZE_MB: int = 10
 
+    # Payment provider configuration (production values come from .env)
+    PAYME_CHECKOUT_URL: str = "https://checkout.paycom.uz/"
+    PAYME_MERCHANT_ID: str = ""
+    PAYME_MERCHANT_KEY: str = ""  # used for HMAC webhook verification
+    CLICK_CHECKOUT_URL: str = "https://my.click.uz/services/pay"
+    CLICK_SERVICE_ID: str = ""
+    CLICK_MERCHANT_ID: str = ""
+    CLICK_SECRET_KEY: str = ""  # used for webhook signature verification
+
+    # Outbound email
+    EMAIL_FROM: str = "noreply@uzwellness.com"
+    EMAIL_BACKEND: str = "log"  # "log" or "smtp"
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: str | None = None
+    SMTP_USE_TLS: bool = True
+
+    # Rate limiting
+    RATE_LIMIT_ENABLED: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

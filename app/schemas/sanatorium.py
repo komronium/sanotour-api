@@ -31,6 +31,12 @@ class SanatoriumImageRead(BaseModel):
     created_at: datetime
 
 
+class SanatoriumImageUpdate(BaseModel):
+    is_primary: bool | None = None
+    order: int | None = Field(default=None, ge=0)
+    caption: str | None = Field(default=None, max_length=255)
+
+
 class SanatoriumBase(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: Translations = Field(default_factory=Translations)

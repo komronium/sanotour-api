@@ -72,6 +72,21 @@ OPENAPI_TAGS = [
         "description": "USD/UZS exchange rate management for price display",
     },
     {
+        "name": "availability",
+        "description": "Monthly availability calendar across a sanatorium's rooms",
+    },
+    {
+        "name": "payments",
+        "description": (
+            "Payment initiation (Payme/Click/Cash) and provider webhooks. "
+            "A successful webhook moves the booking to `confirmed`."
+        ),
+    },
+    {
+        "name": "admin",
+        "description": "Aggregated stats for the admin dashboard",
+    },
+    {
         "name": "health",
         "description": "Liveness + database connectivity probes",
     },

@@ -129,6 +129,29 @@ async def update_room(
     return _room_read(updated, pricing)
 
 
+@router.delete(
+    "/{room_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin_or_above)],
+)
+async def delete_room(
+    room_id: uuid.UUID,
+    current_user: CurrentUser,
+    rooms: RoomService = Depends(get_room_service),
+) -> None:
+    room = await rooms.get_by_id(room_id)
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+    if current_user.role == UserRole.ADMIN:
+        sanatorium = await rooms.get_sanatorium_for_room(room)
+        if sanatorium is None or sanatorium.admin_user_id != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not allowed to delete this room",
+            )
+    await rooms.delete(room)
+
+
 @router.get("/{room_id}/availability", response_model=list[AvailabilityRead])
 async def get_room_availability(
     room_id: uuid.UUID,

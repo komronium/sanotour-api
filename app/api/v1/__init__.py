@@ -1,12 +1,15 @@
 from fastapi import APIRouter
 
 from app.api.v1.routers import (
+    admin,
     amenities,
     auth,
+    availability,
     bookings,
     exchange_rates,
     extra_beds,
     health,
+    payments,
     programs,
     reviews,
     rooms,
@@ -26,3 +29,6 @@ api_router.include_router(amenities.router)
 api_router.include_router(programs.router)
 api_router.include_router(extra_beds.router)
 api_router.include_router(reviews.router)
+api_router.include_router(availability.router)
+api_router.include_router(payments.router)
+api_router.include_router(admin.router)

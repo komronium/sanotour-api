@@ -20,6 +20,7 @@ from app.models.user import User, UserRole
 from app.schemas.sanatorium import (
     SanatoriumCreate,
     SanatoriumImageRead,
+    SanatoriumImageUpdate,
     SanatoriumList,
     SanatoriumRead,
     SanatoriumUpdate,
@@ -33,6 +34,7 @@ from app.services.storage import StorageBackend, detect_image_mime, get_storage
 router = APIRouter(prefix="/sanatoriums", tags=["sanatoriums"])
 
 require_super_admin = require_roles(UserRole.SUPER_ADMIN)
+require_admin_or_above = require_roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
 
 
 def _ensure_can_edit(sanatorium_owner_id: uuid.UUID | None, user: User) -> None:
@@ -112,12 +114,16 @@ async def get_sanatorium(
     "",
     response_model=SanatoriumRead,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_super_admin)],
 )
 async def create_sanatorium(
     payload: SanatoriumCreate,
+    current_user: User = Depends(require_admin_or_above),
     sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
 ) -> SanatoriumRead:
+    # Admins always own the sanatorium they create; only super_admin may
+    # explicitly assign it to a different admin.
+    if current_user.role == UserRole.ADMIN:
+        payload = payload.model_copy(update={"admin_user_id": current_user.id})
     sanatorium = await sanatoriums.create(payload)
     return SanatoriumRead.model_validate(sanatorium)
 
@@ -157,6 +163,25 @@ async def approve_sanatorium(
         )
     approved = await sanatoriums.approve(sanatorium)
     return SanatoriumRead.model_validate(approved)
+
+
+@router.post(
+    "/{sanatorium_id}/reject",
+    response_model=SanatoriumRead,
+    dependencies=[Depends(require_super_admin)],
+)
+async def reject_sanatorium(
+    sanatorium_id: uuid.UUID,
+    sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+) -> SanatoriumRead:
+    sanatorium = await sanatoriums.get_by_id(sanatorium_id)
+    if sanatorium is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sanatorium not found",
+        )
+    rejected = await sanatoriums.reject(sanatorium)
+    return SanatoriumRead.model_validate(rejected)
 
 
 @router.post(
@@ -212,3 +237,63 @@ async def upload_image(
         order=order,
     )
     return SanatoriumImageRead.model_validate(image)
+
+
+@router.patch(
+    "/{sanatorium_id}/images/{image_id}",
+    response_model=SanatoriumImageRead,
+)
+async def update_image(
+    sanatorium_id: uuid.UUID,
+    image_id: uuid.UUID,
+    payload: SanatoriumImageUpdate,
+    current_user: CurrentUser,
+    sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+) -> SanatoriumImageRead:
+    image = await sanatoriums.get_image(image_id)
+    if image is None or image.sanatorium_id != sanatorium_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        )
+    sanatorium = await sanatoriums.get_by_id(sanatorium_id)
+    if sanatorium is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sanatorium not found",
+        )
+    _ensure_can_edit(sanatorium.admin_user_id, current_user)
+    updated = await sanatoriums.update_image(
+        image,
+        is_primary=payload.is_primary,
+        order=payload.order,
+        caption=payload.caption,
+    )
+    return SanatoriumImageRead.model_validate(updated)
+
+
+@router.delete(
+    "/{sanatorium_id}/images/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_image(
+    sanatorium_id: uuid.UUID,
+    image_id: uuid.UUID,
+    current_user: CurrentUser,
+    sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+    storage: StorageBackend = Depends(get_storage),
+) -> None:
+    image = await sanatoriums.get_image(image_id)
+    if image is None or image.sanatorium_id != sanatorium_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        )
+    sanatorium = await sanatoriums.get_by_id(sanatorium_id)
+    if sanatorium is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sanatorium not found",
+        )
+    _ensure_can_edit(sanatorium.admin_user_id, current_user)
+    await sanatoriums.delete_image(image, storage)
