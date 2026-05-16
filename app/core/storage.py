@@ -1,6 +1,9 @@
 from pathlib import Path
 from typing import Protocol
 
+import aiofiles
+from fastapi import HTTPException, status
+
 from app.core.config import settings
 
 
@@ -12,20 +15,50 @@ class StorageBackend(Protocol):
     async def delete(self, *, key: str) -> None: ...
 
 
+def _validate_key(key: str) -> None:
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid storage key"
+        )
+    if (
+        ".." in Path(key).parts
+        or key.startswith("/")
+        or "\x00" in key
+        or "\\" in key
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid storage key"
+        )
+
+
 class LocalStorage:
     def __init__(self, base_dir: Path, url_prefix: str) -> None:
-        self.base_dir = base_dir
+        self.base_dir = base_dir.resolve()
         self.url_prefix = url_prefix.rstrip("/")
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+    def _resolve(self, key: str) -> Path:
+        _validate_key(key)
+        target = (self.base_dir / key).resolve()
+        try:
+            target.relative_to(self.base_dir)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid storage key",
+            ) from exc
+        return target
+
     async def save(self, *, key: str, content: bytes, content_type: str) -> str:
-        target = self.base_dir / key
+        target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        async with aiofiles.open(target, "wb") as f:
+            await f.write(content)
         return f"{self.url_prefix}/{key}"
 
     async def delete(self, *, key: str) -> None:
-        (self.base_dir / key).unlink(missing_ok=True)
+        target = self._resolve(key)
+        target.unlink(missing_ok=True)
 
 
 def get_storage() -> StorageBackend:

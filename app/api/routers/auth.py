@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, status
 
+from app.api.deps import CurrentUser
 from app.core.rate_limit import login_rate_limit, register_rate_limit
 from app.schemas.auth import LoginRequest, RefreshRequest, Token
 from app.schemas.user import UserCreate, UserRead
@@ -40,3 +41,19 @@ async def refresh(
     auth: AuthService = Depends(get_auth_service),
 ) -> Token:
     return await auth.refresh(payload.refresh_token)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    payload: RefreshRequest,
+    auth: AuthService = Depends(get_auth_service),
+) -> None:
+    await auth.logout(payload.refresh_token)
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_all(
+    current_user: CurrentUser,
+    auth: AuthService = Depends(get_auth_service),
+) -> None:
+    await auth.logout_all(current_user)

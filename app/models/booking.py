@@ -105,6 +105,12 @@ class Booking(Base):
         JSONB, nullable=False, default=list, server_default="[]"
     )
 
+    commission_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    commission_percent_snapshot: Mapped[Decimal | None] = mapped_column(Numeric(5, 2))
+    agent_discount_percent_snapshot: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2)
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

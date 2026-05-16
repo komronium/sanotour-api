@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Header, Request
 
 from app.api.deps import CurrentUser
@@ -31,6 +33,20 @@ async def payme_webhook(
 ) -> dict:
     payload = await request.json()
     return await payments.handle_payme_webhook(payload, authorization)
+
+
+@router.post("/{payment_id}/confirm-cash", response_model=PaymentInitiateResponse)
+async def confirm_cash_payment(
+    payment_id: uuid.UUID,
+    current_user: CurrentUser,
+    payments: PaymentService = Depends(get_payment_service),
+) -> PaymentInitiateResponse:
+    payment = await payments.confirm_cash(payment_id, current_user)
+    return PaymentInitiateResponse(
+        payment_id=payment.id,
+        status=payment.status,
+        redirect_url=None,
+    )
 
 
 @router.post("/click/webhook")

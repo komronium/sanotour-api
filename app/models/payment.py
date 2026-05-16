@@ -57,7 +57,7 @@ class Payment(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
     merchant_trans_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    provider_payment_id: Mapped[str | None] = mapped_column(String(120))
+    provider_payment_id: Mapped[str | None] = mapped_column(String(120), index=True)
     raw_payload: Mapped[dict] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
     )

@@ -2,6 +2,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -38,7 +39,17 @@ class AuthService:
     async def refresh(self, refresh_token: str) -> Token:
         user_id, jti = self._parse_refresh_token(refresh_token)
         record = await self.db.get(RefreshToken, jti)
-        if record is None or record.revoked or record.user_id != user_id:
+        if record is None or record.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Refresh token revoked or invalid",
+            )
+        if record.revoked:
+            # Replay attempt: someone presented a token that's already been
+            # exchanged. Revoke the whole chain so an attacker can't keep using
+            # earlier tokens they may have captured.
+            await self._revoke_all_for_user(user_id)
+            await self.db.commit()
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Refresh token revoked or invalid",
@@ -58,6 +69,24 @@ class AuthService:
 
         record.revoked = True
         return await self._issue_token_pair(user.id, commit=True)
+
+    async def logout(self, refresh_token: str) -> None:
+        user_id, jti = self._parse_refresh_token(refresh_token)
+        record = await self.db.get(RefreshToken, jti)
+        if record is not None and record.user_id == user_id and not record.revoked:
+            record.revoked = True
+            await self.db.commit()
+
+    async def logout_all(self, user: User) -> None:
+        await self._revoke_all_for_user(user.id)
+        await self.db.commit()
+
+    async def _revoke_all_for_user(self, user_id: uuid.UUID) -> None:
+        await self.db.execute(
+            update(RefreshToken)
+            .where(RefreshToken.user_id == user_id, RefreshToken.revoked.is_(False))
+            .values(revoked=True)
+        )
 
     async def _issue_token_pair(
         self, user_id: uuid.UUID, *, commit: bool = True

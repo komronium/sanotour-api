@@ -86,6 +86,9 @@ class SanatoriumService:
             property_type=payload.property_type,
             wellness_category=payload.wellness_category,
             treatment_focuses=payload.treatment_focuses,
+            platform_commission_percent=payload.platform_commission_percent,
+            b2b_commission_percent=payload.b2b_commission_percent,
+            agent_discount_tiers=[t.model_dump(mode="json") for t in payload.agent_discount_tiers],
             admin_user_id=payload.admin_user_id,
             status=SanatoriumStatus.PENDING,
             amenities=amenities,
@@ -95,11 +98,24 @@ class SanatoriumService:
         return await self._reload_required(sanatorium.id)
 
     async def update(
-        self, sanatorium: Sanatorium, payload: SanatoriumUpdate
+        self,
+        sanatorium: Sanatorium,
+        payload: SanatoriumUpdate,
+        *,
+        actor: User | None = None,
     ) -> Sanatorium:
         data = payload.model_dump(exclude_unset=True)
 
+        if actor is not None and actor.role != UserRole.SUPER_ADMIN:
+            for restricted in _SUPER_ADMIN_ONLY_FIELDS:
+                if restricted in data:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=f"Only super_admin can modify {restricted}",
+                    )
+
         amenity_ids = data.pop("amenity_ids", None)
+        tiers = data.pop("agent_discount_tiers", _MISSING)
 
         for translation_field in ("description", "house_rules", "cancellation_policy"):
             if translation_field in data and data[translation_field] is not None:
@@ -116,6 +132,11 @@ class SanatoriumService:
 
         for field, value in data.items():
             setattr(sanatorium, field, value)
+
+        if tiers is not _MISSING:
+            sanatorium.agent_discount_tiers = (
+                [t.model_dump(mode="json") for t in tiers] if tiers else []
+            )
 
         if amenity_ids is not None:
             sanatorium.amenities = await self._fetch_amenities(amenity_ids)
@@ -322,6 +343,17 @@ class SanatoriumService:
                 detail="One or more amenity IDs not found",
             )
         return list(rows)
+
+
+_SUPER_ADMIN_ONLY_FIELDS = frozenset(
+    {
+        "platform_commission_percent",
+        "b2b_commission_percent",
+        "agent_discount_tiers",
+        "admin_user_id",
+    }
+)
+_MISSING: object = object()
 
 
 _SORT_CLAUSES = {

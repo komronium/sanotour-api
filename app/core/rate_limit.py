@@ -87,10 +87,10 @@ class RateLimiter:
         if client is None:
             return await _incr_memory(key, self.window_seconds)
         try:
-            pipe = client.pipeline()
-            pipe.incr(key)
-            pipe.expire(key, self.window_seconds)
-            count, _ = await pipe.execute()
+            # SET key 0 EX window NX — only set expiry on first hit, so the
+            # window doesn't roll forward on every request.
+            await client.set(key, 0, ex=self.window_seconds, nx=True)
+            count = await client.incr(key)
             return int(count)
         except Exception:  # noqa: BLE001 - fall back if Redis blows up
             return await _incr_memory(key, self.window_seconds)

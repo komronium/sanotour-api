@@ -8,11 +8,14 @@ from fastapi.staticfiles import StaticFiles
 from app.api import api_router
 from app.api.openapi_tags import OPENAPI_TAGS
 from app.core.config import settings
+from app.core.redis_client import close_redis, get_redis
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    await get_redis()
     yield
+    await close_redis()
 
 
 app = FastAPI(

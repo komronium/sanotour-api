@@ -77,6 +77,33 @@ class PaymentService:
         await self.db.refresh(payment)
         return payment, redirect_url
 
+    async def confirm_cash(
+        self, payment_id: uuid.UUID, user: User
+    ) -> Payment:
+        if user.role not in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only admin/super_admin can confirm cash payments",
+            )
+        payment = await self.db.get(Payment, payment_id)
+        if payment is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found"
+            )
+        if payment.method != PaymentMethod.CASH:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only cash payments can be confirmed here",
+            )
+        if payment.status == PaymentStatus.PAID:
+            return payment
+        await self._mark_paid(
+            payment,
+            provider_payment_id=f"cash:{user.id}",
+            raw_payload={"confirmed_by": str(user.id)},
+        )
+        return payment
+
     async def handle_payme_webhook(self, payload: dict, auth_header: str | None) -> dict:
         if settings.PAYME_MERCHANT_KEY:
             if not _check_payme_auth(auth_header, settings.PAYME_MERCHANT_KEY):

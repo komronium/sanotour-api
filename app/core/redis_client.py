@@ -37,3 +37,13 @@ async def get_redis() -> Any | None:
         logger.warning("Redis unavailable, rate-limit will use in-memory: %s", exc)
         _client = None
     return _client
+
+
+async def close_redis() -> None:
+    global _client
+    if _client is not None:
+        try:
+            await _client.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _client = None

@@ -13,8 +13,11 @@ require_super_admin = require_roles(UserRole.SUPER_ADMIN)
 
 
 @router.get("/me", response_model=UserRead)
-async def get_me(current_user: CurrentUser) -> UserRead:
-    return UserRead.model_validate(current_user)
+async def get_me(
+    current_user: CurrentUser,
+    users: UserService = Depends(get_user_service),
+) -> UserRead:
+    return await users.to_read(current_user)
 
 
 @router.post(
@@ -28,7 +31,7 @@ async def create_user(
     users: UserService = Depends(get_user_service),
 ) -> UserRead:
     user = await users.create_by_admin(payload)
-    return UserRead.model_validate(user)
+    return await users.to_read(user)
 
 
 @router.get("", response_model=UserList)
@@ -41,7 +44,7 @@ async def list_users(
 ) -> UserList:
     items, total = await users.list_users(limit=limit, offset=offset, role=role)
     return UserList(
-        items=[UserRead.model_validate(u) for u in items],
+        items=await users.to_read_bulk(items),
         total=total,
         limit=limit,
         offset=offset,
@@ -60,7 +63,7 @@ async def get_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found",
         )
-    return UserRead.model_validate(user)
+    return await users.to_read(user)
 
 
 @router.patch("/{user_id}", response_model=UserRead)
@@ -77,4 +80,4 @@ async def update_user(
             detail="User not found",
         )
     updated = await users.update(user, payload)
-    return UserRead.model_validate(updated)
+    return await users.to_read(updated)

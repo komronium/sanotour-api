@@ -2,11 +2,16 @@ import uuid
 from datetime import datetime, time
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.sanatorium import PropertyType, SanatoriumStatus, WellnessCategory
 from app.schemas.amenity import AmenityRead
 from app.schemas.common import Translations
+
+
+class AgentDiscountTier(BaseModel):
+    min_bookings: int = Field(ge=1, le=10000)
+    discount_percent: Decimal = Field(ge=0, le=100)
 
 TREATMENT_FOCUS_VALUES = frozenset({
     "cardiovascular", "digestive", "musculoskeletal",
@@ -63,6 +68,16 @@ class SanatoriumCreate(SanatoriumBase):
     slug: str | None = Field(default=None, max_length=255)
     admin_user_id: uuid.UUID | None = None
     amenity_ids: list[uuid.UUID] = Field(default_factory=list)
+    platform_commission_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    b2b_commission_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    agent_discount_tiers: list[AgentDiscountTier] = Field(default_factory=list)
+
+    @field_validator("agent_discount_tiers")
+    @classmethod
+    def _validate_tiers(
+        cls, value: list[AgentDiscountTier]
+    ) -> list[AgentDiscountTier]:
+        return _normalize_tiers(value)
 
 
 class SanatoriumUpdate(BaseModel):
@@ -88,6 +103,18 @@ class SanatoriumUpdate(BaseModel):
     admin_user_id: uuid.UUID | None = None
     treatment_focuses: list[str] | None = None
     amenity_ids: list[uuid.UUID] | None = None
+    platform_commission_percent: Decimal | None = Field(default=None, ge=0, le=100)
+    b2b_commission_percent: Decimal | None = Field(default=None, ge=0, le=100)
+    agent_discount_tiers: list[AgentDiscountTier] | None = None
+
+    @field_validator("agent_discount_tiers")
+    @classmethod
+    def _validate_tiers(
+        cls, value: list[AgentDiscountTier] | None
+    ) -> list[AgentDiscountTier] | None:
+        if value is None:
+            return None
+        return _normalize_tiers(value)
 
 
 class SanatoriumRead(BaseModel):
@@ -118,6 +145,9 @@ class SanatoriumRead(BaseModel):
     avg_rating: Decimal | None
     review_count: int
     admin_user_id: uuid.UUID | None
+    platform_commission_percent: Decimal
+    b2b_commission_percent: Decimal
+    agent_discount_tiers: list[AgentDiscountTier] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     images: list[SanatoriumImageRead] = Field(default_factory=list)
@@ -129,3 +159,16 @@ class SanatoriumList(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+def _normalize_tiers(value: list[AgentDiscountTier]) -> list[AgentDiscountTier]:
+    if not value:
+        return []
+    seen: set[int] = set()
+    for tier in value:
+        if tier.min_bookings in seen:
+            raise ValueError(
+                f"Duplicate min_bookings={tier.min_bookings} in agent_discount_tiers"
+            )
+        seen.add(tier.min_bookings)
+    return sorted(value, key=lambda t: t.min_bookings)

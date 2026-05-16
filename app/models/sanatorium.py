@@ -113,6 +113,16 @@ class Sanatorium(Base):
 
     treatment_focuses: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
 
+    platform_commission_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    b2b_commission_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0"), server_default="0"
+    )
+    agent_discount_tiers: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+
     avg_rating: Mapped[Decimal | None] = mapped_column(Numeric(3, 2))
     review_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

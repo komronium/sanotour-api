@@ -1,6 +1,6 @@
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import Depends, HTTPException, status
@@ -10,12 +10,12 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.core.pricing import calculate_stay_total
-from app.core.utils import date_range
-from app.models.program import TreatmentProgram
+from app.core.utils import date_range, today_tashkent
 from app.models.availability import RoomAvailability
 from app.models.booking import Booking, BookingStatus, BookingType
 from app.models.extra_bed import BookingExtraBed, ExtraBedConfig
 from app.models.notification import Notification
+from app.models.program import TreatmentProgram
 from app.models.room import Room
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
@@ -28,6 +28,27 @@ from app.services.email_service import (
 
 _CANCELLABLE = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
 _CENTS = Decimal("0.01")
+_PERCENT = Decimal("0.01")
+_ZERO = Decimal("0")
+
+
+def _apply_percent(amount: Decimal, percent: Decimal) -> Decimal:
+    return (amount * percent / Decimal("100")).quantize(_CENTS, ROUND_HALF_UP)
+
+
+def _tier_discount_percent(tiers: list | None, current_year_bookings: int) -> Decimal:
+    if not tiers:
+        return _ZERO
+    best = _ZERO
+    for tier in tiers:
+        try:
+            min_bookings = int(tier["min_bookings"])
+            discount = Decimal(str(tier["discount_percent"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if current_year_bookings >= min_bookings and discount > best:
+            best = discount
+    return best
 
 
 class BookingService:
@@ -35,7 +56,7 @@ class BookingService:
         self.db = db
 
     async def create(self, payload: BookingCreate, user: User) -> Booking:
-        if payload.check_in < date.today():
+        if payload.check_in < today_tashkent():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="check_in must be today or in the future",
@@ -115,7 +136,17 @@ class BookingService:
         extra_bed_records = await self._build_extra_beds(
             payload, room.sanatorium_id, nights
         )
+        agent_discount_percent = (
+            await self._agent_tier_discount(user, sanatorium) if is_b2b else _ZERO
+        )
+        if agent_discount_percent > _ZERO:
+            room_total = (
+                room_total * (Decimal("1") - agent_discount_percent / Decimal("100"))
+            ).quantize(_CENTS, ROUND_HALF_UP)
         b2b_client_price = self._resolve_b2b_client_price(payload, is_b2b, room_total)
+        commission_percent, commission_amount = self._commission_snapshot(
+            sanatorium, room_total, is_b2b
+        )
 
         booking = Booking(
             user_id=user.id,
@@ -130,6 +161,11 @@ class BookingService:
             is_b2b=is_b2b,
             b2b_client_price=b2b_client_price,
             guest_details=[g.model_dump() for g in payload.guest_details],
+            commission_snapshot=commission_amount,
+            commission_percent_snapshot=commission_percent,
+            agent_discount_percent_snapshot=(
+                agent_discount_percent if is_b2b else None
+            ),
         )
         self.db.add(booking)
         await self.db.flush()
@@ -148,7 +184,9 @@ class BookingService:
     async def _create_session(self, payload: BookingCreate, user: User) -> Booking:
         program = (
             await self.db.execute(
-                select(TreatmentProgram).where(TreatmentProgram.id == payload.program_id)
+                select(TreatmentProgram).where(
+                    TreatmentProgram.id == payload.program_id
+                )
             )
         ).scalar_one_or_none()
         if program is None or not program.is_active:
@@ -162,7 +200,10 @@ class BookingService:
             )
         sanatorium = await self._approved_sanatorium(program.sanatorium_id)
 
-        if program.group_size_max is not None and payload.guests > program.group_size_max:
+        if (
+            program.group_size_max is not None
+            and payload.guests > program.group_size_max
+        ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Maximum {program.group_size_max} participant(s) per session",
@@ -177,7 +218,17 @@ class BookingService:
 
         is_b2b = user.role == UserRole.AGENT
         total = (program.price * payload.guests).quantize(_CENTS, ROUND_HALF_UP)
+        agent_discount_percent = (
+            await self._agent_tier_discount(user, sanatorium) if is_b2b else _ZERO
+        )
+        if agent_discount_percent > _ZERO:
+            total = (
+                total * (Decimal("1") - agent_discount_percent / Decimal("100"))
+            ).quantize(_CENTS, ROUND_HALF_UP)
         b2b_client_price = self._resolve_b2b_client_price(payload, is_b2b, total)
+        commission_percent, commission_amount = self._commission_snapshot(
+            sanatorium, total, is_b2b
+        )
         booking = Booking(
             user_id=user.id,
             program_id=program.id,
@@ -191,6 +242,11 @@ class BookingService:
             is_b2b=is_b2b,
             b2b_client_price=b2b_client_price,
             guest_details=[g.model_dump() for g in payload.guest_details],
+            commission_snapshot=commission_amount,
+            commission_percent_snapshot=commission_percent,
+            agent_discount_percent_snapshot=(
+                agent_discount_percent if is_b2b else None
+            ),
         )
         self.db.add(booking)
         await self.db.flush()
@@ -233,9 +289,7 @@ class BookingService:
         rows = (await self.db.execute(stmt)).scalars().all()
         return rows, total
 
-    async def get_visible(
-        self, booking_id: uuid.UUID, user: User
-    ) -> Booking | None:
+    async def get_visible(self, booking_id: uuid.UUID, user: User) -> Booking | None:
         stmt = self._visibility_filter(
             select(Booking)
             .options(selectinload(Booking.extra_beds))
@@ -276,6 +330,33 @@ class BookingService:
         if sanatorium_name is not None:
             await self._notify(booking, user, sanatorium_name, kind="cancelled")
         return await self._load(booking.id)  # type: ignore[return-value]
+
+    @staticmethod
+    def _commission_snapshot(
+        sanatorium: Sanatorium, final_price: Decimal, is_b2b: bool
+    ) -> tuple[Decimal, Decimal]:
+        percent = (
+            sanatorium.b2b_commission_percent
+            if is_b2b
+            else sanatorium.platform_commission_percent
+        ) or _ZERO
+        return percent, _apply_percent(final_price, percent)
+
+    async def _agent_tier_discount(self, user: User, sanatorium: Sanatorium) -> Decimal:
+        if not sanatorium.agent_discount_tiers:
+            return _ZERO
+        year_start = datetime(datetime.now(UTC).year, 1, 1, tzinfo=UTC)
+        count = (
+            await self.db.execute(
+                select(func.count(Booking.id)).where(
+                    Booking.user_id == user.id,
+                    Booking.is_b2b.is_(True),
+                    Booking.status != BookingStatus.CANCELLED,
+                    Booking.created_at >= year_start,
+                )
+            )
+        ).scalar_one()
+        return _tier_discount_percent(sanatorium.agent_discount_tiers, int(count or 0))
 
     @staticmethod
     def _resolve_b2b_client_price(
@@ -415,8 +496,9 @@ class BookingService:
     async def build_invoice(self, booking: Booking) -> dict:
         sanatorium_name = await self._sanatorium_name_for(booking) or ""
         user = (
-            (await self.db.execute(select(User).where(User.id == booking.user_id)))
-            .scalar_one_or_none()
+            (
+                await self.db.execute(select(User).where(User.id == booking.user_id))
+            ).scalar_one_or_none()
             if booking.user_id
             else None
         )
@@ -468,7 +550,10 @@ class BookingService:
             return (
                 await self.db.execute(
                     select(Sanatorium.name)
-                    .join(TreatmentProgram, TreatmentProgram.sanatorium_id == Sanatorium.id)
+                    .join(
+                        TreatmentProgram,
+                        TreatmentProgram.sanatorium_id == Sanatorium.id,
+                    )
                     .where(TreatmentProgram.id == booking.program_id)
                 )
             ).scalar_one_or_none()

@@ -142,7 +142,7 @@ async def update_sanatorium(
             detail="Sanatorium not found",
         )
     _ensure_can_edit(sanatorium.admin_user_id, current_user)
-    updated = await sanatoriums.update(sanatorium, payload)
+    updated = await sanatoriums.update(sanatorium, payload, actor=current_user)
     return SanatoriumRead.model_validate(updated)
 
 

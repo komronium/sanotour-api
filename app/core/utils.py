@@ -1,4 +1,12 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
+TASHKENT_TZ = ZoneInfo("Asia/Tashkent")
+
+
+def today_tashkent() -> date:
+    """Return today's date in Asia/Tashkent — for booking check_in cutoffs."""
+    return datetime.now(TASHKENT_TZ).date()
 
 
 def date_range(start: date, end: date) -> list[date]:

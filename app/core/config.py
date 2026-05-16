@@ -60,6 +60,12 @@ class Settings(BaseSettings):
 
     # Rate limiting
     RATE_LIMIT_ENABLED: bool = True
+    TRUSTED_PROXY_IPS: list[str] = []  # only trust X-Forwarded-For from these IPs
+
+    # DB pool
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 3600
 
 
 @lru_cache

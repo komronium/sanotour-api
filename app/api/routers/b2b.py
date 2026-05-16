@@ -1,8 +1,15 @@
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import CurrentUser
 from app.models.user import UserRole
-from app.schemas.b2b import B2BClient, B2BClientList, B2BDashboard
+from app.schemas.b2b import (
+    B2BDashboard,
+    B2BDiscountStatus,
+    B2BOrderItem,
+    B2BOrdersList,
+)
 from app.services.b2b_service import B2BService, get_b2b_service
 
 router = APIRouter(prefix="/b2b", tags=["b2b"])
@@ -26,17 +33,28 @@ async def get_dashboard(
     return B2BDashboard(**data)
 
 
-@router.get("/clients", response_model=B2BClientList)
-async def list_clients(
+@router.get("/discount-status", response_model=B2BDiscountStatus)
+async def get_discount_status(
+    current_user: CurrentUser,
+    sanatorium_id: uuid.UUID = Query(...),
+    b2b: B2BService = Depends(get_b2b_service),
+) -> B2BDiscountStatus:
+    _require_b2b(current_user)
+    data = await b2b.discount_status(current_user, sanatorium_id)
+    return B2BDiscountStatus(**data)
+
+
+@router.get("/orders", response_model=B2BOrdersList)
+async def list_orders(
     current_user: CurrentUser,
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     b2b: B2BService = Depends(get_b2b_service),
-) -> B2BClientList:
+) -> B2BOrdersList:
     _require_b2b(current_user)
-    items, total = await b2b.clients(current_user, limit=limit, offset=offset)
-    return B2BClientList(
-        items=[B2BClient(**{**c, "booking_id": str(c["booking_id"])}) for c in items],
+    items, total = await b2b.orders(current_user, limit=limit, offset=offset)
+    return B2BOrdersList(
+        items=[B2BOrderItem(**item) for item in items],
         total=total,
         limit=limit,
         offset=offset,
