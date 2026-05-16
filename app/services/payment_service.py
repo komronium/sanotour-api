@@ -77,7 +77,7 @@ class PaymentService:
         await self.db.refresh(payment)
         return payment, redirect_url
 
-    async def handle_payme_webhook(self, payload: dict, raw_body: bytes, auth_header: str | None) -> dict:
+    async def handle_payme_webhook(self, payload: dict, auth_header: str | None) -> dict:
         if settings.PAYME_MERCHANT_KEY:
             if not _check_payme_auth(auth_header, settings.PAYME_MERCHANT_KEY):
                 raise HTTPException(
@@ -252,7 +252,9 @@ def _click_sign(payload: dict, secret: str) -> str:
         str(payload.get("action", "")),
         str(payload.get("sign_time", "")),
     ]
-    return hashlib.md5("".join(parts).encode("utf-8")).hexdigest()  # noqa: S324 — Click protocol uses MD5
+    return hashlib.md5(
+        "".join(parts).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()
 
 
 def get_payment_service(db: AsyncSession = Depends(get_db)) -> PaymentService:

@@ -29,9 +29,8 @@ async def payme_webhook(
     authorization: str | None = Header(default=None),
     payments: PaymentService = Depends(get_payment_service),
 ) -> dict:
-    body = await request.body()
     payload = await request.json()
-    return await payments.handle_payme_webhook(payload, body, authorization)
+    return await payments.handle_payme_webhook(payload, authorization)
 
 
 @router.post("/click/webhook")

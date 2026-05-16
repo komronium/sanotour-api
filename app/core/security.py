@@ -24,7 +24,7 @@ def create_token(
     jti: str | None = None,
 ) -> tuple[str, datetime]:
     if expires_delta is None:
-        if token_type == "access":
+        if token_type == "access":  # nosec B105 — JWT token type, not a password
             expires_delta = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         else:
             expires_delta = timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
