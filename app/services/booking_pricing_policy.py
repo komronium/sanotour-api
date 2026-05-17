@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+
+from fastapi import HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.discount_tiers import best_tier_discount_percent
+from app.models.booking import Booking, BookingStatus
+from app.models.sanatorium import Sanatorium
+from app.models.user import User
+from app.schemas.booking import BookingCreate
+
+_CENTS = Decimal("0.01")
+_ZERO = Decimal("0")
+
+
+def apply_percent(amount: Decimal, percent: Decimal) -> Decimal:
+    return (amount * percent / Decimal("100")).quantize(_CENTS, ROUND_HALF_UP)
+
+
+class BookingPricingPolicy:
+    """Cross-cutting pricing rules for both ROOM and SESSION bookings."""
+
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def apply(
+        self,
+        *,
+        base_total: Decimal,
+        sanatorium: Sanatorium,
+        user: User,
+        is_b2b: bool,
+        payload: BookingCreate,
+    ) -> "BookingPricing":
+        agent_discount_percent = (
+            await self._agent_tier_discount(user, sanatorium) if is_b2b else _ZERO
+        )
+        discounted = base_total
+        if agent_discount_percent > _ZERO:
+            discounted = (
+                base_total
+                * (Decimal("1") - agent_discount_percent / Decimal("100"))
+            ).quantize(_CENTS, ROUND_HALF_UP)
+        b2b_client_price = self._resolve_b2b_client_price(payload, is_b2b, discounted)
+        commission_percent, commission_amount = self._commission_snapshot(
+            sanatorium, discounted, is_b2b
+        )
+        return BookingPricing(
+            final_price=discounted,
+            agent_discount_percent=agent_discount_percent,
+            b2b_client_price=b2b_client_price,
+            commission_percent=commission_percent,
+            commission_amount=commission_amount,
+        )
+
+    @staticmethod
+    def _commission_snapshot(
+        sanatorium: Sanatorium, final_price: Decimal, is_b2b: bool
+    ) -> tuple[Decimal, Decimal]:
+        percent = (
+            sanatorium.b2b_commission_percent
+            if is_b2b
+            else sanatorium.platform_commission_percent
+        ) or _ZERO
+        return percent, apply_percent(final_price, percent)
+
+    async def _agent_tier_discount(
+        self, user: User, sanatorium: Sanatorium
+    ) -> Decimal:
+        if not sanatorium.agent_discount_tiers:
+            return _ZERO
+        year_start = datetime(datetime.now(UTC).year, 1, 1, tzinfo=UTC)
+        count = (
+            await self.db.execute(
+                select(func.count(Booking.id)).where(
+                    Booking.user_id == user.id,
+                    Booking.is_b2b.is_(True),
+                    Booking.status != BookingStatus.CANCELLED,
+                    Booking.created_at >= year_start,
+                )
+            )
+        ).scalar_one()
+        return best_tier_discount_percent(
+            sanatorium.agent_discount_tiers, int(count or 0)
+        )
+
+    @staticmethod
+    def _resolve_b2b_client_price(
+        payload: BookingCreate, is_b2b: bool, agent_price: Decimal
+    ) -> Decimal | None:
+        if not is_b2b:
+            return None
+        if payload.b2b_client_price is None:
+            return None
+        if payload.b2b_client_price < agent_price:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="b2b_client_price cannot be lower than agent price",
+            )
+        return payload.b2b_client_price
+
+
+class BookingPricing:
+    """Output of BookingPricingPolicy.apply()."""
+
+    __slots__ = (
+        "final_price",
+        "agent_discount_percent",
+        "b2b_client_price",
+        "commission_percent",
+        "commission_amount",
+    )
+
+    def __init__(
+        self,
+        *,
+        final_price: Decimal,
+        agent_discount_percent: Decimal,
+        b2b_client_price: Decimal | None,
+        commission_percent: Decimal,
+        commission_amount: Decimal,
+    ) -> None:
+        self.final_price = final_price
+        self.agent_discount_percent = agent_discount_percent
+        self.b2b_client_price = b2b_client_price
+        self.commission_percent = commission_percent
+        self.commission_amount = commission_amount

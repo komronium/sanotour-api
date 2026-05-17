@@ -28,5 +28,16 @@ SessionLocal = async_sessionmaker(
 
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Request-scoped session.
+
+    Each service still drives its own ``commit()`` boundaries — moving every
+    service to a Unit-of-Work / commit-on-request-end model is a separate
+    architectural change. Here we only guarantee that exceptions roll back any
+    uncommitted work, so that a half-finished service call cannot leak.
+    """
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
