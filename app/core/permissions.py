@@ -7,6 +7,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.sanatorium import Sanatorium
 from app.models.user import User, UserRole
 
+SANATORIUM_SUPER_ADMIN_ONLY_FIELDS = frozenset(
+    {
+        "platform_commission_percent",
+        "b2b_commission_percent",
+        "agent_discount_tiers",
+        "admin_user_id",
+    }
+)
+
+
+def assert_super_admin_only_fields(
+    data: dict, actor: User | None, *, allowed_fields: frozenset[str]
+) -> None:
+    """Reject the request if a non-super_admin tried to touch privileged fields."""
+    if actor is None or actor.role == UserRole.SUPER_ADMIN:
+        return
+    for field in allowed_fields:
+        if field in data:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Only super_admin can modify {field}",
+            )
+
 
 async def assert_sanatorium_access(
     db: AsyncSession,

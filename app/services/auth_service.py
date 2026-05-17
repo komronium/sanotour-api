@@ -6,7 +6,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.security import create_token, decode_token
+from app.core.security import create_token, decode_token, hash_password, verify_password
 from app.models.refresh_token import RefreshToken
 from app.models.user import User
 from app.schemas.auth import Token
@@ -78,6 +78,18 @@ class AuthService:
             await self.db.commit()
 
     async def logout_all(self, user: User) -> None:
+        await self._revoke_all_for_user(user.id)
+        await self.db.commit()
+
+    async def change_password(
+        self, user: User, current_password: str, new_password: str
+    ) -> None:
+        if not verify_password(current_password, user.password_hash):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Current password is incorrect",
+            )
+        user.password_hash = hash_password(new_password)
         await self._revoke_all_for_user(user.id)
         await self.db.commit()
 

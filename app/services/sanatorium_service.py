@@ -1,5 +1,3 @@
-import re
-import unicodedata
 import uuid
 from collections.abc import Sequence
 from decimal import Decimal
@@ -11,6 +9,11 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.permissions import (
+    SANATORIUM_SUPER_ADMIN_ONLY_FIELDS,
+    assert_super_admin_only_fields,
+)
+from app.core.slug import slugify as _slugify
 from app.models.amenity import Amenity
 from app.models.sanatorium import (
     PropertyType,
@@ -23,14 +26,9 @@ from app.models.user import User, UserRole
 from app.schemas.sanatorium import SanatoriumCreate, SanatoriumUpdate
 from app.core.storage import MIME_EXTENSIONS, StorageBackend
 
-_UZBEK_STRIP = str.maketrans({"ʻ": "", "ʼ": "", "’": "", "'": ""})
-
 
 def slugify(text: str) -> str:
-    text = text.translate(_UZBEK_STRIP)
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
-    return text or "sanatorium"
+    return _slugify(text, fallback="sanatorium")
 
 
 class SanatoriumService:
@@ -106,13 +104,9 @@ class SanatoriumService:
     ) -> Sanatorium:
         data = payload.model_dump(exclude_unset=True)
 
-        if actor is not None and actor.role != UserRole.SUPER_ADMIN:
-            for restricted in _SUPER_ADMIN_ONLY_FIELDS:
-                if restricted in data:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Only super_admin can modify {restricted}",
-                    )
+        assert_super_admin_only_fields(
+            data, actor, allowed_fields=SANATORIUM_SUPER_ADMIN_ONLY_FIELDS
+        )
 
         amenity_ids = data.pop("amenity_ids", None)
         tiers = data.pop("agent_discount_tiers", _MISSING)
@@ -345,14 +339,6 @@ class SanatoriumService:
         return list(rows)
 
 
-_SUPER_ADMIN_ONLY_FIELDS = frozenset(
-    {
-        "platform_commission_percent",
-        "b2b_commission_percent",
-        "agent_discount_tiers",
-        "admin_user_id",
-    }
-)
 _MISSING: object = object()
 
 

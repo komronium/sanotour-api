@@ -5,6 +5,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.deps import CurrentUser
 from app.core.rate_limit import booking_rate_limit
 from app.schemas.booking import BookingCreate, BookingList, BookingRead, InvoiceRead
+from app.services.booking_invoice import (
+    BookingInvoiceBuilder,
+    get_booking_invoice_builder,
+)
 from app.services.booking_service import BookingService, get_booking_service
 
 router = APIRouter(prefix="/bookings", tags=["bookings"])
@@ -68,13 +72,14 @@ async def get_booking_invoice(
     booking_id: uuid.UUID,
     current_user: CurrentUser,
     bookings: BookingService = Depends(get_booking_service),
+    invoices: BookingInvoiceBuilder = Depends(get_booking_invoice_builder),
 ) -> InvoiceRead:
     booking = await bookings.get_visible(booking_id, current_user)
     if booking is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found"
         )
-    data = await bookings.build_invoice(booking)
+    data = await invoices.build(booking)
     return InvoiceRead(**data)
 
 

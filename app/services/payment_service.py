@@ -13,16 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.program import TreatmentProgram
+from app.core.notifier import BookingNotifier, get_booking_notifier
+from app.core.sanatorium_lookup import sanatorium_name_for_booking
 from app.models.booking import Booking, BookingStatus
 from app.models.payment import Payment, PaymentMethod, PaymentStatus
-from app.models.room import Room
-from app.models.sanatorium import Sanatorium
 from app.models.user import User, UserRole
-from app.services.email_service import (
-    BookingEmailContext,
-    send_booking_confirmed,
-)
+from app.services.email_service import BookingEmailContext
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +26,9 @@ _PAYME_AMOUNT_FACTOR = Decimal("100")
 
 
 class PaymentService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, notifier: BookingNotifier) -> None:
         self.db = db
+        self.notifier = notifier
 
     async def initiate(
         self, booking_id: uuid.UUID, method: PaymentMethod, user: User
@@ -207,7 +204,7 @@ class PaymentService:
         user = await self.db.get(User, booking.user_id)
         if user is None or not user.email:
             return
-        sanatorium_name = await self._lookup_sanatorium_name(booking)
+        sanatorium_name = await sanatorium_name_for_booking(self.db, booking)
         if sanatorium_name is None:
             return
         ctx = BookingEmailContext(
@@ -219,22 +216,7 @@ class PaymentService:
             total_price=booking.final_price,
             currency=booking.currency,
         )
-        send_booking_confirmed(to=user.email, ctx=ctx)
-
-    async def _lookup_sanatorium_name(self, booking: Booking) -> str | None:
-        if booking.room_id is not None:
-            return (await self.db.execute(
-                select(Sanatorium.name)
-                .join(Room, Room.sanatorium_id == Sanatorium.id)
-                .where(Room.id == booking.room_id)
-            )).scalar_one_or_none()
-        if booking.program_id is not None:
-            return (await self.db.execute(
-                select(Sanatorium.name)
-                .join(TreatmentProgram, TreatmentProgram.sanatorium_id == Sanatorium.id)
-                .where(TreatmentProgram.id == booking.program_id)
-            )).scalar_one_or_none()
-        return None
+        self.notifier.booking_confirmed(to=user.email, ctx=ctx)
 
 
 def _build_payme_url(booking: Booking, merchant_trans_id: str) -> str:
@@ -284,5 +266,8 @@ def _click_sign(payload: dict, secret: str) -> str:
     ).hexdigest()
 
 
-def get_payment_service(db: AsyncSession = Depends(get_db)) -> PaymentService:
-    return PaymentService(db)
+def get_payment_service(
+    db: AsyncSession = Depends(get_db),
+    notifier: BookingNotifier = Depends(get_booking_notifier),
+) -> PaymentService:
+    return PaymentService(db, notifier)

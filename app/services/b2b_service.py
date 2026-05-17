@@ -7,14 +7,15 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.booking import Booking, BookingStatus, BookingType
+from app.core.discount_tiers import best_tier_discount_percent, next_tier
+from app.core.sanatorium_lookup import sanatorium_name_for_booking
+from app.models.booking import Booking, BookingStatus
 from app.models.program import TreatmentProgram
 from app.models.room import Room
 from app.models.sanatorium import Sanatorium
 from app.models.user import User
 
 _CENTS = Decimal("0.01")
-_ZERO = Decimal("0")
 
 
 def _year_start(now: datetime) -> datetime:
@@ -105,30 +106,12 @@ class B2BService:
         ).scalar_one()
         current = int(count or 0)
 
-        tiers = sorted(
-            sanatorium.agent_discount_tiers or [],
-            key=lambda t: int(t["min_bookings"]),
-        )
-        current_tier_percent = _ZERO
-        next_tier: dict | None = None
-        for tier in tiers:
-            min_b = int(tier["min_bookings"])
-            pct = Decimal(str(tier["discount_percent"]))
-            if current >= min_b:
-                if pct > current_tier_percent:
-                    current_tier_percent = pct
-            elif next_tier is None:
-                next_tier = {
-                    "min_bookings": min_b,
-                    "discount_percent": pct,
-                    "bookings_to_unlock": min_b - current,
-                }
-
+        tiers = sanatorium.agent_discount_tiers or []
         return {
             "sanatorium_id": sanatorium.id,
             "current_year_bookings": current,
-            "current_tier_discount_percent": current_tier_percent,
-            "next_tier": next_tier,
+            "current_tier_discount_percent": best_tier_discount_percent(tiers, current),
+            "next_tier": next_tier(tiers, current),
         }
 
     async def orders(
@@ -158,7 +141,9 @@ class B2BService:
                 {
                     "booking_id": booking.id,
                     "booking_code": booking.code,
-                    "sanatorium_name": await self._sanatorium_name(booking),
+                    "sanatorium_name": await sanatorium_name_for_booking(
+                        self.db, booking
+                    ),
                     "price_paid": booking.final_price,
                     "agent_discount_percent": booking.agent_discount_percent_snapshot,
                     "client_price": booking.b2b_client_price,
@@ -184,28 +169,6 @@ class B2BService:
             .scalar_subquery()
         )
         return Booking.room_id.in_(room_sub) | Booking.program_id.in_(program_sub)
-
-    async def _sanatorium_name(self, booking: Booking) -> str | None:
-        if booking.booking_type == BookingType.ROOM and booking.room_id is not None:
-            return (
-                await self.db.execute(
-                    select(Sanatorium.name)
-                    .join(Room, Room.sanatorium_id == Sanatorium.id)
-                    .where(Room.id == booking.room_id)
-                )
-            ).scalar_one_or_none()
-        if booking.program_id is not None:
-            return (
-                await self.db.execute(
-                    select(Sanatorium.name)
-                    .join(
-                        TreatmentProgram,
-                        TreatmentProgram.sanatorium_id == Sanatorium.id,
-                    )
-                    .where(TreatmentProgram.id == booking.program_id)
-                )
-            ).scalar_one_or_none()
-        return None
 
 
 def get_b2b_service(db: AsyncSession = Depends(get_db)) -> B2BService:

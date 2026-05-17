@@ -9,7 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.core.discount_tiers import best_tier_discount_percent
+from app.core.notifier import BookingNotifier, get_booking_notifier
 from app.core.pricing import calculate_stay_total
+from app.core.sanatorium_lookup import sanatorium_name_for_booking
 from app.core.utils import date_range, today_tashkent
 from app.models.availability import RoomAvailability
 from app.models.booking import Booking, BookingStatus, BookingType
@@ -20,11 +23,7 @@ from app.models.room import Room
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate
-from app.services.email_service import (
-    BookingEmailContext,
-    send_booking_cancelled,
-    send_booking_received,
-)
+from app.services.email_service import BookingEmailContext
 
 _CANCELLABLE = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
 _CENTS = Decimal("0.01")
@@ -36,24 +35,10 @@ def _apply_percent(amount: Decimal, percent: Decimal) -> Decimal:
     return (amount * percent / Decimal("100")).quantize(_CENTS, ROUND_HALF_UP)
 
 
-def _tier_discount_percent(tiers: list | None, current_year_bookings: int) -> Decimal:
-    if not tiers:
-        return _ZERO
-    best = _ZERO
-    for tier in tiers:
-        try:
-            min_bookings = int(tier["min_bookings"])
-            discount = Decimal(str(tier["discount_percent"]))
-        except (KeyError, TypeError, ValueError):
-            continue
-        if current_year_bookings >= min_bookings and discount > best:
-            best = discount
-    return best
-
-
 class BookingService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, notifier: BookingNotifier) -> None:
         self.db = db
+        self.notifier = notifier
 
     async def create(self, payload: BookingCreate, user: User) -> Booking:
         if payload.check_in < today_tashkent():
@@ -324,7 +309,7 @@ class BookingService:
         )
         await self.db.commit()
 
-        sanatorium_name = await self._sanatorium_name_for(booking)
+        sanatorium_name = await sanatorium_name_for_booking(self.db, booking)
         if sanatorium_name is not None:
             await self._notify(booking, user, sanatorium_name, kind="cancelled")
         return await self._load(booking.id)  # type: ignore[return-value]
@@ -354,7 +339,9 @@ class BookingService:
                 )
             )
         ).scalar_one()
-        return _tier_discount_percent(sanatorium.agent_discount_tiers, int(count or 0))
+        return best_tier_discount_percent(
+            sanatorium.agent_discount_tiers, int(count or 0)
+        )
 
     @staticmethod
     def _resolve_b2b_client_price(
@@ -487,76 +474,13 @@ class BookingService:
             currency=booking.currency,
         )
         if kind == "received":
-            send_booking_received(to=user.email, ctx=ctx)
+            self.notifier.booking_received(to=user.email, ctx=ctx)
         elif kind == "cancelled":
-            send_booking_cancelled(to=user.email, ctx=ctx)
-
-    async def build_invoice(self, booking: Booking) -> dict:
-        sanatorium_name = await self._sanatorium_name_for(booking) or ""
-        user = (
-            (
-                await self.db.execute(select(User).where(User.id == booking.user_id))
-            ).scalar_one_or_none()
-            if booking.user_id
-            else None
-        )
-        nights = max((booking.check_out - booking.check_in).days, 1)
-        subtotal = booking.final_price
-        extras_total = sum((eb.total_price for eb in booking.extra_beds), Decimal("0"))
-        line_items: list[dict] = [
-            {
-                "description": "Room/program",
-                "qty": booking.guests,
-                "amount": subtotal,
-            }
-        ]
-        for eb in booking.extra_beds:
-            line_items.append(
-                {
-                    "description": f"Extra bed × {eb.count}",
-                    "qty": eb.count,
-                    "amount": eb.total_price,
-                }
-            )
-        return {
-            "booking_code": booking.code,
-            "issued_at": datetime.now(UTC),
-            "customer_name": (user.full_name if user else None) or "",
-            "customer_email": user.email if user else None,
-            "sanatorium_name": sanatorium_name,
-            "check_in": booking.check_in,
-            "check_out": booking.check_out,
-            "nights": nights,
-            "guests": booking.guests,
-            "subtotal": subtotal,
-            "total": subtotal + extras_total,
-            "currency": booking.currency,
-            "is_b2b": booking.is_b2b,
-            "line_items": line_items,
-        }
-
-    async def _sanatorium_name_for(self, booking: Booking) -> str | None:
-        if booking.room_id is not None:
-            return (
-                await self.db.execute(
-                    select(Sanatorium.name)
-                    .join(Room, Room.sanatorium_id == Sanatorium.id)
-                    .where(Room.id == booking.room_id)
-                )
-            ).scalar_one_or_none()
-        if booking.program_id is not None:
-            return (
-                await self.db.execute(
-                    select(Sanatorium.name)
-                    .join(
-                        TreatmentProgram,
-                        TreatmentProgram.sanatorium_id == Sanatorium.id,
-                    )
-                    .where(TreatmentProgram.id == booking.program_id)
-                )
-            ).scalar_one_or_none()
-        return None
+            self.notifier.booking_cancelled(to=user.email, ctx=ctx)
 
 
-def get_booking_service(db: AsyncSession = Depends(get_db)) -> BookingService:
-    return BookingService(db)
+def get_booking_service(
+    db: AsyncSession = Depends(get_db),
+    notifier: BookingNotifier = Depends(get_booking_notifier),
+) -> BookingService:
+    return BookingService(db, notifier)

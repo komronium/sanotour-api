@@ -2,7 +2,12 @@ from fastapi import APIRouter, Depends, status
 
 from app.api.deps import CurrentUser
 from app.core.rate_limit import login_rate_limit, register_rate_limit
-from app.schemas.auth import LoginRequest, RefreshRequest, Token
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    RefreshRequest,
+    Token,
+)
 from app.schemas.user import UserCreate, UserRead
 from app.services.auth_service import AuthService, get_auth_service
 
@@ -57,3 +62,14 @@ async def logout_all(
     auth: AuthService = Depends(get_auth_service),
 ) -> None:
     await auth.logout_all(current_user)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current_user: CurrentUser,
+    auth: AuthService = Depends(get_auth_service),
+) -> None:
+    await auth.change_password(
+        current_user, payload.current_password, payload.new_password
+    )
