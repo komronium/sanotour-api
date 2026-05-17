@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.room import ExchangeRate, Room
+from app.models.exchange_rate import ExchangeRate
+from app.models.room import Room
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
 from app.models.user import User, UserRole
 from tests.factories import make_sanatorium, make_user

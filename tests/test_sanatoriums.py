@@ -242,14 +242,20 @@ async def test_list_super_admin_sees_all(
     assert resp.json()["total"] == 3
 
 
-async def test_list_admin_sees_only_own(
+async def test_list_admin_sees_approved_and_own(
     client: AsyncClient, db: AsyncSession, admin_user, admin_headers
 ) -> None:
-    await make_sanatorium(db, slug="mine", admin_user_id=admin_user.id)
-    await make_sanatorium(db, slug="someone-else")
+    # Admin sees the public catalogue (approved properties of all owners) plus
+    # their own draft/pending/rejected listings — they should never be locked
+    # out of their own work even before approval.
+    await make_sanatorium(db, slug="mine-pending", admin_user_id=admin_user.id,
+                         status=SanatoriumStatus.PENDING)
+    await make_sanatorium(db, slug="someone-else-approved")
+    await make_sanatorium(db, slug="someone-else-pending",
+                         status=SanatoriumStatus.PENDING)
     resp = await client.get("/api/sanatoriums", headers=admin_headers)
-    assert resp.json()["total"] == 1
-    assert resp.json()["items"][0]["slug"] == "mine"
+    slugs = {item["slug"] for item in resp.json()["items"]}
+    assert slugs == {"mine-pending", "someone-else-approved"}
 
 
 # ---------- list filters / search / sort ----------

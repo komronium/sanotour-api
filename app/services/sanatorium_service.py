@@ -126,9 +126,16 @@ class SanatoriumService:
             setattr(sanatorium, field, value)
 
         if tiers is not _MISSING:
-            sanatorium.agent_discount_tiers = (
-                [t.model_dump(mode="json") for t in tiers] if tiers else []
-            )
+            # payload.model_dump() already converted Pydantic models to dicts; we
+            # just need to coerce the Decimal in discount_percent to str so JSONB
+            # round-trips cleanly.
+            sanatorium.agent_discount_tiers = [
+                {
+                    "min_bookings": int(t["min_bookings"]),
+                    "discount_percent": str(t["discount_percent"]),
+                }
+                for t in (tiers or [])
+            ]
 
         if amenity_ids is not None:
             sanatorium.amenities = await self._fetch_amenities(amenity_ids)
