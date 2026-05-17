@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.discount_tiers import best_tier_discount_percent
 from app.core.notifier import BookingNotifier, get_booking_notifier
+from app.core.policies import BookingPolicy
 from app.core.pricing import calculate_stay_total
 from app.core.sanatorium_lookup import sanatorium_name_for_booking
 from app.core.utils import date_range, today_tashkent
@@ -25,7 +26,6 @@ from app.models.user import User, UserRole
 from app.schemas.booking import BookingCreate
 from app.services.email_service import BookingEmailContext
 
-_CANCELLABLE = {BookingStatus.PENDING, BookingStatus.CONFIRMED}
 _CENTS = Decimal("0.01")
 _PERCENT = Decimal("0.01")
 _ZERO = Decimal("0")
@@ -441,18 +441,15 @@ class BookingService:
         return stmt.where(Booking.user_id == user.id)
 
     def _assert_can_cancel(self, booking: Booking, user: User) -> None:
-        if booking.status not in _CANCELLABLE:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Booking cannot be cancelled (status: {booking.status})",
-            )
-        if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN):
+        reason = BookingPolicy.cancel_block_reason(booking, user)
+        if reason is None:
             return
-        if booking.user_id != user.id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not allowed to cancel this booking",
-            )
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if booking.status not in {BookingStatus.PENDING, BookingStatus.CONFIRMED}
+            else status.HTTP_403_FORBIDDEN
+        )
+        raise HTTPException(status_code=status_code, detail=reason)
 
     async def _notify(
         self,

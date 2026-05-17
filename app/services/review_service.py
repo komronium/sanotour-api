@@ -7,9 +7,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.policies import ReviewPolicy
 from app.models.review import SanatoriumReview
 from app.models.sanatorium import Sanatorium, SanatoriumStatus
-from app.models.user import User, UserRole
+from app.models.user import User
 from app.schemas.review import ReviewCreate, ReviewUpdate
 
 _CENTS = Decimal("0.01")
@@ -108,32 +109,31 @@ class ReviewService:
     async def _assert_can_moderate(
         self, review: SanatoriumReview, user: User
     ) -> None:
-        if user.role == UserRole.SUPER_ADMIN:
-            return
-        if user.role == UserRole.ADMIN:
-            sanatorium = (
-                await self.db.execute(
-                    select(Sanatorium).where(Sanatorium.id == review.sanatorium_id)
-                )
-            ).scalar_one_or_none()
-            if sanatorium is not None and sanatorium.admin_user_id == user.id:
-                return
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not allowed to moderate this review",
-        )
+        sanatorium = await self._review_sanatorium(review)
+        if not ReviewPolicy.can_moderate(review, user, sanatorium):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not allowed to moderate this review",
+            )
 
     async def _assert_can_delete(
         self, review: SanatoriumReview, user: User
     ) -> None:
-        if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN):
-            await self._assert_can_moderate(review, user)
-            return
-        if review.user_id != user.id:
+        sanatorium = await self._review_sanatorium(review)
+        if not ReviewPolicy.can_delete(review, user, sanatorium):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Not allowed to delete this review",
             )
+
+    async def _review_sanatorium(
+        self, review: SanatoriumReview
+    ) -> Sanatorium | None:
+        return (
+            await self.db.execute(
+                select(Sanatorium).where(Sanatorium.id == review.sanatorium_id)
+            )
+        ).scalar_one_or_none()
 
     async def _recompute_rating(self, sanatorium: Sanatorium) -> None:
         count, avg = (

@@ -1,28 +1,25 @@
-import base64
-import hashlib
-import hmac
 import logging
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from decimal import Decimal
-from urllib.parse import urlencode
 
 from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.notifier import BookingNotifier, get_booking_notifier
 from app.core.sanatorium_lookup import sanatorium_name_for_booking
+from app.integrations.payment_gateways import (
+    WebhookResult,
+    get_gateway,
+)
 from app.models.booking import Booking, BookingStatus
 from app.models.payment import Payment, PaymentMethod, PaymentStatus
 from app.models.user import User, UserRole
 from app.services.email_service import BookingEmailContext
 
 logger = logging.getLogger(__name__)
-
-_PAYME_AMOUNT_FACTOR = Decimal("100")
 
 
 class PaymentService:
@@ -33,9 +30,9 @@ class PaymentService:
     async def initiate(
         self, booking_id: uuid.UUID, method: PaymentMethod, user: User
     ) -> tuple[Payment, str | None]:
-        booking = (await self.db.execute(
-            select(Booking).where(Booking.id == booking_id)
-        )).scalar_one_or_none()
+        booking = (
+            await self.db.execute(select(Booking).where(Booking.id == booking_id))
+        ).scalar_one_or_none()
         if booking is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found"
@@ -52,6 +49,13 @@ class PaymentService:
             )
 
         merchant_trans_id = uuid.uuid4().hex
+        gateway = get_gateway(method)
+        redirect_url = gateway.build_checkout_url(
+            amount=booking.final_price,
+            currency=booking.currency,
+            merchant_trans_id=merchant_trans_id,
+        )
+
         payment = Payment(
             booking_id=booking.id,
             method=method,
@@ -59,13 +63,7 @@ class PaymentService:
             currency=booking.currency,
             merchant_trans_id=merchant_trans_id,
         )
-
-        redirect_url: str | None = None
-        if method == PaymentMethod.PAYME:
-            redirect_url = _build_payme_url(booking, merchant_trans_id)
-        elif method == PaymentMethod.CLICK:
-            redirect_url = _build_click_url(booking, merchant_trans_id)
-        elif method == PaymentMethod.CASH:
+        if method == PaymentMethod.CASH:
             booking.status = BookingStatus.PENDING
             payment.status = PaymentStatus.PENDING
 
@@ -101,80 +99,50 @@ class PaymentService:
         )
         return payment
 
-    async def handle_payme_webhook(self, payload: dict, auth_header: str | None) -> dict:
-        if settings.PAYME_MERCHANT_KEY:
-            if not _check_payme_auth(auth_header, settings.PAYME_MERCHANT_KEY):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid webhook signature",
-                )
-
-        params = payload.get("params") or {}
-        merchant_trans_id = (
-            params.get("account", {}).get("order_id")
-            or params.get("merchant_trans_id")
-            or params.get("id")
-        )
-        if not merchant_trans_id:
+    async def handle_webhook(
+        self,
+        method: PaymentMethod,
+        *,
+        payload: dict,
+        headers: Mapping[str, str],
+    ) -> dict:
+        gateway = get_gateway(method)
+        if not gateway.verify_webhook(payload=payload, headers=headers):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing merchant_trans_id",
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid webhook signature",
             )
-
-        payment = await self._find_by_trans_id(merchant_trans_id)
+        result = gateway.parse_webhook(payload=payload)
+        payment = await self._find_by_trans_id(result.merchant_trans_id)
         if payment is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found"
             )
-        await self._mark_paid(
-            payment,
-            provider_payment_id=params.get("id"),
-            raw_payload=payload,
-        )
-        return {"result": {"state": 2}}
+        await self._apply_webhook_result(payment, result, payload)
+        return result.response_body
 
-    async def handle_click_webhook(self, payload: dict) -> dict:
-        sign_string = payload.get("sign_string")
-        if settings.CLICK_SECRET_KEY and sign_string:
-            expected = _click_sign(payload, settings.CLICK_SECRET_KEY)
-            if not hmac.compare_digest(sign_string, expected):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid webhook signature",
-                )
-
-        merchant_trans_id = payload.get("merchant_trans_id")
-        if not merchant_trans_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing merchant_trans_id",
-            )
-
-        payment = await self._find_by_trans_id(merchant_trans_id)
-        if payment is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found"
-            )
-
-        action = int(payload.get("action", 0))
-        error = int(payload.get("error", 0))
-        if action == 1 and error == 0:
+    async def _apply_webhook_result(
+        self, payment: Payment, result: WebhookResult, payload: dict
+    ) -> None:
+        if result.is_paid:
             await self._mark_paid(
                 payment,
-                provider_payment_id=str(payload.get("click_trans_id", "")),
+                provider_payment_id=result.provider_payment_id,
                 raw_payload=payload,
             )
-        elif error != 0:
+        elif result.is_failed:
             payment.status = PaymentStatus.FAILED
             payment.raw_payload = {**(payment.raw_payload or {}), **payload}
             await self.db.commit()
 
-        return {"error": 0, "error_note": "Success"}
-
     async def _find_by_trans_id(self, merchant_trans_id: str) -> Payment | None:
-        return (await self.db.execute(
-            select(Payment).where(Payment.merchant_trans_id == str(merchant_trans_id))
-        )).scalar_one_or_none()
+        return (
+            await self.db.execute(
+                select(Payment).where(
+                    Payment.merchant_trans_id == str(merchant_trans_id)
+                )
+            )
+        ).scalar_one_or_none()
 
     async def _mark_paid(
         self,
@@ -217,53 +185,6 @@ class PaymentService:
             currency=booking.currency,
         )
         self.notifier.booking_confirmed(to=user.email, ctx=ctx)
-
-
-def _build_payme_url(booking: Booking, merchant_trans_id: str) -> str:
-    if not settings.PAYME_MERCHANT_ID:
-        return f"{settings.PAYME_CHECKOUT_URL}?order_id={merchant_trans_id}"
-    amount_tiyin = int((Decimal(booking.final_price) * _PAYME_AMOUNT_FACTOR).to_integral_value())
-    params = f"m={settings.PAYME_MERCHANT_ID};ac.order_id={merchant_trans_id};a={amount_tiyin}"
-    encoded = base64.b64encode(params.encode("utf-8")).decode("ascii")
-    return f"{settings.PAYME_CHECKOUT_URL}{encoded}"
-
-
-def _build_click_url(booking: Booking, merchant_trans_id: str) -> str:
-    if not settings.CLICK_SERVICE_ID:
-        return f"{settings.CLICK_CHECKOUT_URL}?merchant_trans_id={merchant_trans_id}"
-    query = urlencode({
-        "service_id": settings.CLICK_SERVICE_ID,
-        "merchant_id": settings.CLICK_MERCHANT_ID,
-        "amount": str(booking.final_price),
-        "transaction_param": merchant_trans_id,
-    })
-    return f"{settings.CLICK_CHECKOUT_URL}?{query}"
-
-
-def _check_payme_auth(auth_header: str | None, secret: str) -> bool:
-    if not auth_header or not auth_header.lower().startswith("basic "):
-        return False
-    try:
-        decoded = base64.b64decode(auth_header.split(" ", 1)[1]).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return False
-    _, _, password = decoded.partition(":")
-    return hmac.compare_digest(password, secret)
-
-
-def _click_sign(payload: dict, secret: str) -> str:
-    parts = [
-        str(payload.get("click_trans_id", "")),
-        str(payload.get("service_id", "")),
-        secret,
-        str(payload.get("merchant_trans_id", "")),
-        str(payload.get("amount", "")),
-        str(payload.get("action", "")),
-        str(payload.get("sign_time", "")),
-    ]
-    return hashlib.md5(
-        "".join(parts).encode("utf-8"), usedforsecurity=False
-    ).hexdigest()
 
 
 def get_payment_service(

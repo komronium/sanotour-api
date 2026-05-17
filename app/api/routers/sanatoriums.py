@@ -25,6 +25,10 @@ from app.schemas.sanatorium import (
     SanatoriumRead,
     SanatoriumUpdate,
 )
+from app.services.sanatorium_image_service import (
+    SanatoriumImageService,
+    get_sanatorium_image_service,
+)
 from app.services.sanatorium_service import (
     SanatoriumService,
     get_sanatorium_service,
@@ -197,6 +201,7 @@ async def upload_image(
     is_primary: bool = Form(default=False),
     order: int = Form(default=0, ge=0),
     sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+    images: SanatoriumImageService = Depends(get_sanatorium_image_service),
     storage: StorageBackend = Depends(get_storage),
 ) -> SanatoriumImageRead:
     sanatorium = await sanatoriums.get_by_id(sanatorium_id)
@@ -227,7 +232,7 @@ async def upload_image(
             detail="Unsupported file type (allowed: JPEG, PNG, WebP)",
         )
 
-    image = await sanatoriums.add_image(
+    image = await images.add(
         sanatorium=sanatorium,
         content=content,
         content_type=mime,
@@ -249,8 +254,9 @@ async def update_image(
     payload: SanatoriumImageUpdate,
     current_user: CurrentUser,
     sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+    images: SanatoriumImageService = Depends(get_sanatorium_image_service),
 ) -> SanatoriumImageRead:
-    image = await sanatoriums.get_image(image_id)
+    image = await images.get(image_id)
     if image is None or image.sanatorium_id != sanatorium_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -263,7 +269,7 @@ async def update_image(
             detail="Sanatorium not found",
         )
     _ensure_can_edit(sanatorium.admin_user_id, current_user)
-    updated = await sanatoriums.update_image(
+    updated = await images.update(
         image,
         is_primary=payload.is_primary,
         order=payload.order,
@@ -281,9 +287,10 @@ async def delete_image(
     image_id: uuid.UUID,
     current_user: CurrentUser,
     sanatoriums: SanatoriumService = Depends(get_sanatorium_service),
+    images: SanatoriumImageService = Depends(get_sanatorium_image_service),
     storage: StorageBackend = Depends(get_storage),
 ) -> None:
-    image = await sanatoriums.get_image(image_id)
+    image = await images.get(image_id)
     if image is None or image.sanatorium_id != sanatorium_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -296,4 +303,4 @@ async def delete_image(
             detail="Sanatorium not found",
         )
     _ensure_can_edit(sanatorium.admin_user_id, current_user)
-    await sanatoriums.delete_image(image, storage)
+    await images.delete(image, storage)

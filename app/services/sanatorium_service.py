@@ -3,28 +3,26 @@ from collections.abc import Sequence
 from decimal import Decimal
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.permissions import (
     SANATORIUM_SUPER_ADMIN_ONLY_FIELDS,
     assert_super_admin_only_fields,
 )
+from app.core.policies import SanatoriumPolicy
 from app.core.slug import slugify as _slugify
 from app.models.amenity import Amenity
 from app.models.sanatorium import (
     PropertyType,
     Sanatorium,
-    SanatoriumImage,
     SanatoriumStatus,
     WellnessCategory,
 )
 from app.models.user import User, UserRole
 from app.schemas.sanatorium import SanatoriumCreate, SanatoriumUpdate
-from app.core.storage import MIME_EXTENSIONS, StorageBackend
 
 
 def slugify(text: str) -> str:
@@ -158,52 +156,11 @@ class SanatoriumService:
         await self.db.commit()
         return await self._reload_required(sanatorium.id)
 
-    async def delete_image(
-        self, image: SanatoriumImage, storage: StorageBackend
-    ) -> None:
-        prefix = settings.UPLOAD_URL_PREFIX.rstrip("/") + "/"
-        key = image.url[len(prefix):] if image.url.startswith(prefix) else image.url
-        await storage.delete(key=key)
-        await self.db.delete(image)
-        await self.db.commit()
-
-    async def update_image(
-        self,
-        image: SanatoriumImage,
-        *,
-        is_primary: bool | None = None,
-        order: int | None = None,
-        caption: str | None = None,
-    ) -> SanatoriumImage:
-        if is_primary is True:
-            await self.db.execute(
-                update(SanatoriumImage)
-                .where(SanatoriumImage.sanatorium_id == image.sanatorium_id)
-                .where(SanatoriumImage.id != image.id)
-                .where(SanatoriumImage.is_primary.is_(True))
-                .values(is_primary=False)
-            )
-            image.is_primary = True
-        elif is_primary is False:
-            image.is_primary = False
-        if order is not None:
-            image.order = order
-        if caption is not None:
-            image.caption = caption
-        await self.db.commit()
-        await self.db.refresh(image)
-        return image
-
-    async def get_image(self, image_id: uuid.UUID) -> SanatoriumImage | None:
-        return (await self.db.execute(
-            select(SanatoriumImage).where(SanatoriumImage.id == image_id)
-        )).scalar_one_or_none()
-
     async def get_visible(
         self, sanatorium_id: uuid.UUID, user: User | None
     ) -> Sanatorium | None:
         sanatorium = await self.get_by_id(sanatorium_id)
-        if sanatorium is None or not _can_view(sanatorium, user):
+        if sanatorium is None or not SanatoriumPolicy.can_view(sanatorium, user):
             return None
         return sanatorium
 
@@ -271,43 +228,6 @@ class SanatoriumService:
         rows = (await self.db.execute(stmt)).scalars().all()
         return rows, total
 
-    async def add_image(
-        self,
-        *,
-        sanatorium: Sanatorium,
-        content: bytes,
-        content_type: str,
-        storage: StorageBackend,
-        caption: str | None,
-        is_primary: bool,
-        order: int,
-    ) -> SanatoriumImage:
-        ext = MIME_EXTENSIONS[content_type]
-        image_id = uuid.uuid4()
-        key = f"sanatoriums/{sanatorium.id}/{image_id}.{ext}"
-        url = await storage.save(key=key, content=content, content_type=content_type)
-
-        if is_primary:
-            await self.db.execute(
-                update(SanatoriumImage)
-                .where(SanatoriumImage.sanatorium_id == sanatorium.id)
-                .where(SanatoriumImage.is_primary.is_(True))
-                .values(is_primary=False)
-            )
-
-        image = SanatoriumImage(
-            id=image_id,
-            sanatorium_id=sanatorium.id,
-            url=url,
-            order=order,
-            is_primary=is_primary,
-            caption=caption,
-        )
-        self.db.add(image)
-        await self.db.commit()
-        await self.db.refresh(image)
-        return image
-
     async def _reload_required(self, sanatorium_id: uuid.UUID) -> Sanatorium:
         result = await self._reload(sanatorium_id)
         if result is None:
@@ -365,15 +285,6 @@ def _apply_visibility(stmt, user: User | None):
             | (Sanatorium.admin_user_id == user.id)
         )
     return stmt.where(Sanatorium.status == SanatoriumStatus.APPROVED)
-
-
-def _can_view(sanatorium: Sanatorium, user: User | None) -> bool:
-    if user is not None and user.role == UserRole.SUPER_ADMIN:
-        return True
-    if user is not None and user.role == UserRole.ADMIN:
-        if sanatorium.admin_user_id == user.id:
-            return True
-    return sanatorium.status == SanatoriumStatus.APPROVED
 
 
 def get_sanatorium_service(db: AsyncSession = Depends(get_db)) -> SanatoriumService:
